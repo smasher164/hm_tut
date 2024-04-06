@@ -1,7 +1,7 @@
 open Base
 open Poly
 
-module One() = struct
+module Two() = struct
   type id = string
   type ty =
     | TyBool (* Bool *)
@@ -19,11 +19,13 @@ module One() = struct
     | EVar of id (* x *)
     | ELam of id * exp (* fun x -> x *)
     | EApp of exp * exp (* f arg *)
+    | EIf of exp * exp * exp (* if <exp> then <exp> else <exp> *)
   type texp =
     | TEBool of bool * ty
     | TEVar of id * ty
     | TELam of id * texp * ty
     | TEApp of texp * texp * ty
+    | TEIf of texp * texp * texp * ty
   type prog = exp
 
   let rec force (ty : ty) : ty =
@@ -74,6 +76,7 @@ module One() = struct
     | TEVar (_, ty) -> ty
     | TEApp (_, _, ty) -> ty
     | TELam (_, _, ty) -> ty
+    | TEIf (_, _, _, ty) -> ty
 
   (* Global state that stores a counter for generating fresh unbound type variables. *)
   let gensym_counter = ref 0
@@ -153,6 +156,17 @@ module One() = struct
       unify (typ fn) ty_arr;
       (* Return the result type. *)
       TEApp (fn, arg, ty_res)
+    | EIf (cond, thn, els) ->
+      (* Check that the type of condition is Bool. *)
+      let cond = infer env cond in
+      unify (typ cond) TyBool;
+      (* Check that the types of the branches are equal to each other. *)
+      let thn = infer env thn in
+      let els = infer env els in
+      unify (typ thn) (typ els);
+      (* Return the type of one of the branches. (we'll pick the "then"
+          branch) *)
+      TEIf (cond, thn, els, typ thn)
   
   let typecheck_prog (prog: prog) : texp = infer [] prog
 end
@@ -164,15 +178,29 @@ let assert_raises f e =
   with exn -> equal exn e
 
 let%test "basic" =
-  let open One() in
+  let open Two() in
   let prog = EApp(ELam("x", EVar "x"), EBool true) in
   let x = typecheck_prog prog in
   let t = typ x in
   Poly.equal (ty_pretty t) "bool"
 
 let%test "basic_error" =
-  let open One() in
+  let open Two() in
   let prog = EApp(ELam("f", EApp(EVar "f", EBool true)), EBool true) in
   assert_raises
     (fun () -> typecheck_prog prog)
     (UnificationFailure "failed to unify type (bool -> ?1) with bool")
+
+let%test "if" =
+  let open Two() in
+  let prog = EIf(EBool true, EBool false, EApp(ELam("x", EVar "x"), EBool true)) in
+  let x = typecheck_prog prog in
+  let t = typ x in
+  Poly.equal (ty_pretty t) "bool"
+
+let%test "if_error" =
+  let open Two() in
+  let prog = EIf(EBool true, EBool false, ELam("x", EVar "x")) in
+  assert_raises
+    (fun () -> typecheck_prog prog)
+    (UnificationFailure "failed to unify type bool with (?0 -> ?0)")
