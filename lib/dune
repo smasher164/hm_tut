@@ -4,3 +4,6 @@
  (preprocess
   (pps ppx_inline_test))
  (public_name hm_tut))
+(env
+  (dev
+    (flags (:standard -w -A))))

@@ -37,7 +37,7 @@ module One() = struct
     | TyVar { contents = Link _ } -> failwith "unexpected: Link"
     | TyVar { contents = Unbound id } -> id
     | TyArrow (from, dst) ->
-      "(" ^ ty_pretty from ^ " -> " ^ ty_pretty dst ^ ")"
+      ty_pretty from ^ " -> " ^ ty_pretty dst
   
   let rec ty_debug ty =
     match ty with
@@ -175,4 +175,4 @@ let%test "basic_error" =
   let prog = EApp(ELam("f", EApp(EVar "f", EBool true)), EBool true) in
   assert_raises
     (fun () -> typecheck_prog prog)
-    (UnificationFailure "failed to unify type (bool -> ?1) with bool")
+    (UnificationFailure "failed to unify type bool -> ?1 with bool")
