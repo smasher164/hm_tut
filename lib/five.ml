@@ -169,6 +169,9 @@ module Five() = struct
       (* Check that src occurs in the arrow type. *)
       occurs src from;
       occurs src dst;
+    | TyRecord (_, flds) ->
+      (* Check that src occurs in the field types. *)
+      List.iter flds ~f:(fun (_, ty) -> occurs src ty)
     | _ -> ()
 
   (* Unify two types. If they are not unifiable, raise an exception. *)
