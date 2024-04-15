@@ -323,7 +323,7 @@ let%test "record" =
   let t = typ x in
   Poly.equal (ty_pretty t) "bool"
 
-let%test "record_error" =
+let%test "record_anonymous" =
   let open Three() in
   let prog = ([], EProj(ERecord([("y", EBool false)]), "y")) in
   let x = typecheck_prog prog in
