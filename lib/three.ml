@@ -10,7 +10,7 @@ module Three() = struct
     | TyName of id (* Type name: Foo *)
   and record_ty = (id * ty) list
   and tv = (* A type variable *)
-    | Unbound of id * record_ty
+    | Unbound of id * (record_ty option)
       (* Unbound type variable: Holds the type variable's unique name. *)
     | Link of ty (* Link type variable: Holds a reference to a type. *)
   (* Type declaration/constructor. All type declarations are nominal records. *)
@@ -64,9 +64,9 @@ module Three() = struct
     match force ty with
     | TyBool -> "bool"
     | TyVar { contents = Link _ } -> failwith "unexpected: Link"
-    | TyVar { contents = Unbound(id, flds) } ->
-      if List.is_empty flds then id
-      else Printf.sprintf "%s{%s}" id (ty_fields ty_pretty flds)
+    | TyVar { contents = Unbound(id, None) } -> id
+    | TyVar { contents = Unbound(id, Some flds) } ->
+      Printf.sprintf "%s{%s}" id (ty_fields ty_pretty flds)
     | TyArrow (from, dst) ->
       ty_pretty from ^ " -> " ^ ty_pretty dst
     | TyName name -> name
@@ -76,9 +76,9 @@ module Three() = struct
     | TyBool -> "TyBool"
     | TyVar { contents = Link ty } ->
         Printf.sprintf "TyVar(Link(%s))" (ty_debug ty)
-    | TyVar { contents = Unbound(id,flds) } ->
-      if List.is_empty flds then Printf.sprintf "TyVar(Unbound %s)" id
-      else Printf.sprintf "TyVar(Unbound(%s, %s))" id (ty_fields ty_debug flds)
+    | TyVar { contents = Unbound(id, None) } -> Printf.sprintf "TyVar(Unbound %s)" id
+    | TyVar { contents = Unbound(id, Some flds) } ->
+      Printf.sprintf "TyVar(Unbound(%s, %s))" id (ty_fields ty_debug flds)
     | TyArrow(from, dst) ->
       "(" ^ ty_debug from ^ " -> " ^ ty_debug dst ^ ")"
     | TyName name -> name
@@ -139,16 +139,23 @@ module Three() = struct
   let gensym_counter = ref 0
 
   (* Generate a fresh unbound type variable. *)
-  let fresh_unbound_var ?(row = []) () =
+  let fresh_unbound_var ?row () =
       let n = !gensym_counter in
       Int.incr gensym_counter;
       let tvar = "?" ^ Int.to_string n in
       TyVar (ref (Unbound(tvar, row)))
 
-  let rec union_rows env (row_a: record_ty) (row_b: record_ty) : record_ty =
-    List.dedup_and_sort (row_a @ row_b) ~compare:(fun (f1,t1) (f2,t2) ->
-      if f1 = f2 then (unify env t1 t2; 0)
-      else Poly.compare (f1,t1) (f2,t2))
+  let row_iter (row: record_ty option) f =
+    Option.iter row ~f:(fun row -> List.iter row ~f)
+
+  let rec union_rows env (row_a: record_ty option) (row_b: record_ty option) : record_ty option =
+    match (row_a, row_b) with
+    | None, None -> None
+    | None, Some flds | Some flds, None -> Some flds
+    | Some row_a, Some row_b ->
+      Some (List.dedup_and_sort (row_a @ row_b) ~compare:(fun (f1,t1) (f2,t2) ->
+        if f1 = f2 then (unify env t1 t2; 0)
+        else Poly.compare (f1,t1) (f2,t2)))
   
   (* Occurs check: check if a type variable occurs in a type. If it does, raise
     an exception. *)
@@ -156,13 +163,9 @@ module Three() = struct
     (* Follow all the links. If we see a type variable, it will only be
        Unbound. *)
     match force ty with
-    | TyVar tgt ->
-      if src == tgt then
-        (* src type variable occurs in ty. *)
-        raise OccursCheck
-      else
-        let { contents = Unbound(_, tgt_row) } = tgt in
-        List.iter tgt_row ~f:(fun (_, ty) -> occurs src ty)
+    | TyVar tgt when src == tgt -> raise OccursCheck
+    | TyVar { contents = Unbound(_, tgt_row) } ->
+      row_iter tgt_row (fun (_, ty) -> occurs src ty)
     | TyArrow(from, dst) ->
       (* Check that src occurs in the arrow type. *)
       occurs src from;
@@ -183,19 +186,20 @@ module Three() = struct
       unify env f1 f2;
       unify env d1 d2;
     | TyVar tv, ty | ty, TyVar tv ->
-      let { contents = Unbound(_, tv_row) } = tv in
+      let Unbound(_, tv_row) = !tv in
       (match ty with
       | TyName tname ->
         let tc = lookup_tycon tname env in
-        List.iter tv_row ~f:(fun (fx,tx) ->
+        row_iter tv_row (fun (fx,tx) ->
           (* Check that the type constructor contains all fields in tv_row *)
           if not (List.exists tc.ty ~f:(fun (f,t) -> f = fx && (unify env t tx; true))) then
             raise (missing_field fx tc.name)
         )
+      | TyBool when Option.is_some tv_row -> raise (unify_failed t1 t2)
       | TyVar other when tv != other ->
         (* Union the rows of these two distinct type variables. *)
-        let { contents = Unbound(id, other_row) } = other in
-        List.iter other_row ~f:(fun (_, ty) -> occurs tv ty);
+        let Unbound(id, other_row) = !other in
+        row_iter other_row (fun (_, ty) -> occurs tv ty);
         let row = union_rows env tv_row other_row in
         other := Unbound(id, row)
       | _ ->
@@ -257,7 +261,7 @@ module Three() = struct
       TERecord (rec_lit, ty)
     | EProj (rcd, fld) ->
       let rcd = infer env rcd in
-      match typ rcd with
+      (match typ rcd with
       | TyName tname ->
         let tc = lookup_tycon tname env in
         (match List.Assoc.find tc.ty ~equal fld with
@@ -265,10 +269,10 @@ module Three() = struct
         | _ -> raise (missing_field fld tc.name))
       | TyVar ({ contents = Unbound(id, row) } as tv) ->
         let fld_ty = fresh_unbound_var() in
-        let row = union_rows env row [(fld, fld_ty)] in
+        let row = union_rows env row (Some [(fld, fld_ty)]) in
         tv := Unbound(id, row);
         TEProj(rcd, fld, fld_ty)
-      | ty -> raise (expected_ty_error "TyName or TyVar" (ty_kind ty))
+      | ty -> raise (expected_ty_error "TyName or TyVar" (ty_kind ty)))
   
   let typecheck_prog ((tl,exp): prog) : texp =
     let deduped_defs = Hash_set.create (module String) in
