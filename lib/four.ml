@@ -253,7 +253,6 @@ module Four() = struct
       let ty_res = fresh_unbound_var () in
       let ty_arr = TyArrow (typ arg, ty_res ) in
       (* Unify it with the function's type. *)
-      let tfn = typ fn in
       unify env (typ fn) ty_arr;
       (* Return the result type. *)
       TEApp (fn, arg, ty_res)
