@@ -195,13 +195,13 @@ module Three() = struct
           if not (List.exists tc.ty ~f:(fun (f,t) -> f = fx && (unify env t tx; true))) then
             raise (missing_field fx tc.name)
         )
-      | TyBool when Option.is_some tv_row -> raise (unify_failed t1 t2)
       | TyVar other when tv != other ->
         (* Union the rows of these two distinct type variables. *)
         let Unbound(id, other_row) = !other in
         row_iter other_row (fun (_, ty) -> occurs tv ty);
         let row = union_rows env tv_row other_row in
         other := Unbound(id, row)
+      | _ when Option.is_some tv_row -> raise (unify_failed t1 t2)
       | _ ->
         (* If either type is a type variable, ensure that the type variable does
            not occur in the type. *)
