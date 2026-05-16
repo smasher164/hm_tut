@@ -30,6 +30,7 @@ module Three() = struct
     | EApp of exp * exp (* f arg *)
     | EIf of exp * exp * exp (* if <exp> then <exp> else <exp> *)
     | ERecord of record_lit (* {x = true, y = false} *)
+    | EWith of exp * record_lit (* { r with x = true, y = false} *)
     | EProj of exp * id (* r.y *)
   and record_lit = (id * exp) list
   type texp =
@@ -39,6 +40,7 @@ module Three() = struct
     | TEApp of texp * texp * ty
     | TEIf of texp * texp * texp * ty
     | TERecord of tyrecord_lit * ty
+    | TEWith of texp * tyrecord_lit * ty
     | TEProj of texp * id * ty
   and tyrecord_lit = (id * texp) list
   type prog = tycon list * exp
@@ -137,6 +139,7 @@ module Three() = struct
     | TELam (_, _, ty) -> ty
     | TEIf (_, _, _, ty) -> ty
     | TERecord (_, ty) -> ty
+    | TEWith (_, _, ty) -> ty
     | TEProj (_, _, ty) -> ty
 
   (* Global state that stores a counter for generating fresh unbound type variables. *)
@@ -278,6 +281,18 @@ module Three() = struct
       let rec_lit = List.map rec_lit ~f:(fun (id, x) -> (id, infer env x)) in
       let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
       TERecord (rec_lit, TyRecord flds)
+    | EWith (rcd, flds) ->
+      let rcd = infer env rcd in
+      let rec_lit = List.map flds ~f:(fun (id, x) -> (id, infer env x)) in
+      let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
+      let row = fresh_unbound_var ~row:flds () in
+      unify env (typ rcd) row;
+      TEWith (rcd, rec_lit, typ rcd) (*
+      flds need to be a subset of the fields in rcd.
+      the resultant type of inference is the same as the type of rcd.
+      so really, we infer flds, and then assert that it's a subset. how do we do that?
+
+    *)
     | EProj (rcd, fld) ->
       let rcd = infer env rcd in
       (match typ rcd with
@@ -390,3 +405,13 @@ let%test "row_if" =
   assert_raises
     (fun () -> typecheck_prog prog)
     (UnificationFailure "failed to unify type {x: bool} with {x: bool, y: bool}")
+
+let%test "row_with" =
+  let open Three() in
+  let prog = (
+    [],
+    EWith(ERecord [("x", EBool  true)], [("y", EBool true)])
+  ) in
+  assert_raises
+    (fun () -> typecheck_prog prog)
+    (MissingField "missing field y in {x: bool}")

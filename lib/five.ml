@@ -7,6 +7,7 @@ module Five() = struct
     | TyBool (* Bool *)
     | TyArrow of ty * ty (* Function type: T1 -> T2 *)
     | TyVar of tv ref (* Type variable: held behind a mutable reference. *)
+    | TyRecord of record_ty
     | TyName of id (* Type name: Foo *)
   and record_ty = (id * ty) list
   and tv = (* A type variable *)
@@ -29,6 +30,7 @@ module Five() = struct
     | EApp of exp * exp (* f arg *)
     | EIf of exp * exp * exp (* if <exp> then <exp> else <exp> *)
     | ERecord of record_lit (* {x = true, y = false} *)
+    | EWith of exp * record_lit (* { r with x = true, y = false} *)
     | EProj of exp * id (* r.y *)
     | ELet of let_decl * exp (* let x : <type-annotation> = <exp> in <exp> *)
     | ELetRec of let_decl list * exp (* let rec <decls> in <exp> *)
@@ -41,6 +43,7 @@ module Five() = struct
     | TEApp of texp * texp * ty
     | TEIf of texp * texp * texp * ty
     | TERecord of tyrecord_lit * ty
+    | TEWith of texp * tyrecord_lit * ty
     | TEProj of texp * id * ty
     | TELet of tlet_decl * texp * ty
     | TELetRec of tlet_decl list * texp * ty
@@ -59,6 +62,7 @@ module Five() = struct
     | TyBool -> "TyBool"
     | TyVar _ -> "TyVar"
     | TyArrow _ -> "TyArrow"
+    | TyRecord _ -> "TyRecord"
     | TyName _ -> "TyName"
 
   let ty_fields f flds =
@@ -75,6 +79,7 @@ module Five() = struct
       Printf.sprintf "%s{%s}" id (ty_fields ty_pretty flds)
     | TyArrow (from, dst) ->
       ty_pretty from ^ " -> " ^ ty_pretty dst
+    | TyRecord flds -> Printf.sprintf "{%s}" (ty_fields ty_pretty flds)
     | TyName name -> name
   
   let rec ty_debug ty =
@@ -87,6 +92,7 @@ module Five() = struct
       Printf.sprintf "TyVar(Unbound(%s, %s))" id (ty_fields ty_debug flds)
     | TyArrow(from, dst) ->
       "(" ^ ty_debug from ^ " -> " ^ ty_debug dst ^ ")"
+    | TyRecord flds -> Printf.sprintf "TyRecord{%s}" (ty_fields ty_debug flds)
     | TyName name -> name
 
   
@@ -139,6 +145,7 @@ module Five() = struct
     | TELam (_, _, ty) -> ty
     | TEIf (_, _, _, ty) -> ty
     | TERecord (_, ty) -> ty
+    | TEWith (_, _, ty) -> ty
     | TEProj (_, _, ty) -> ty
     | TELet (_, _, ty) -> ty
     | TELetRec (_, _, ty) -> ty
@@ -164,6 +171,9 @@ module Five() = struct
       Some (List.dedup_and_sort (row_a @ row_b) ~compare:(fun (f1,t1) (f2,t2) ->
         if f1 = f2 then (unify env t1 t2; 0)
         else Poly.compare (f1,t1) (f2,t2)))
+
+  and fld_exists env (rcd: record_ty) id ty =
+    List.exists rcd ~f:(fun (f,t) -> f == id && (unify env t ty; true))
 
   (* Occurs check: check if a type variable occurs in a type. If it does, raise
     an exception. *)
@@ -198,24 +208,37 @@ module Five() = struct
       (match ty with
       | TyName tname ->
         let tc = lookup_tycon tname env in
-        row_iter tv_row (fun (fx,tx) ->
+        row_iter tv_row (fun (id,ty) ->
           (* Check that the type constructor contains all fields in tv_row *)
-          if not (List.exists tc.ty ~f:(fun (f,t) -> f = fx && (unify env t tx; true))) then
-            raise (missing_field fx tc.name)
+          if not (fld_exists env tc.ty id ty) then
+            raise (missing_field id tc.name)
         )
-      | TyBool when Option.is_some tv_row -> raise (unify_failed t1 t2)
+      | TyRecord flds as tyrec ->
+        row_iter tv_row (fun (id,ty) ->
+          if not (fld_exists env flds id ty) then
+            raise (missing_field id (ty_pretty tyrec))
+        )
       | TyVar other when tv != other ->
         (* Union the rows of these two distinct type variables. *)
         let Unbound(id, other_row) = !other in
         row_iter other_row (fun (_, ty) -> occurs tv ty);
         let row = union_rows env tv_row other_row in
         other := Unbound(id, row)
+      | _ when Option.is_some tv_row -> raise (unify_failed t1 t2)
       | _ ->
         (* If either type is a type variable, ensure that the type variable does
-            not occur in the type. *)
+           not occur in the type. *)
         occurs tv ty);
       (* Link the type variable to the type. *)
       tv := Link ty
+    | TyRecord flds1, TyRecord flds2 when (List.length flds1) == (List.length flds2) ->
+      (* Both types are records with the same name and number of fields. *)
+      let unify_fld (id1, ty1) (id2, ty2) =
+        if not (id1 == id2) then raise (unify_failed ty1 ty2)
+        else unify env ty1 ty2
+      in
+      (* Unify their corresponding fields. *)
+      List.iter2_exn ~f:unify_fld flds1 flds2
     | TyName a, TyName b when equal a b -> () (* The type names are the same. *)
     | _ ->
       (* Unification has failed. *)
@@ -272,9 +295,15 @@ module Five() = struct
       TEIf (cond, thn, els, typ thn)
     | ERecord rec_lit ->
       let rec_lit = List.map rec_lit ~f:(fun (id, x) -> (id, infer env x)) in
-      let row = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
-      let ty = fresh_unbound_var ~row () in
-      TERecord (rec_lit, ty)
+      let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
+      TERecord (rec_lit, TyRecord flds)
+    | EWith (rcd, flds) ->
+      let rcd = infer env rcd in
+      let rec_lit = List.map flds ~f:(fun (id, x) -> (id, infer env x)) in
+      let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
+      let row = fresh_unbound_var ~row:flds () in
+      unify env (typ rcd) row;
+      TEWith (rcd, rec_lit, typ rcd)
     | EProj (rcd, fld) ->
       let rcd = infer env rcd in
       (match typ rcd with
@@ -283,6 +312,10 @@ module Five() = struct
         (match List.Assoc.find tc.ty ~equal fld with
         | Some ty -> TEProj (rcd, fld, ty)
         | _ -> raise (missing_field fld tc.name))
+      | TyRecord flds as tyrec ->
+        (match List.Assoc.find flds ~equal fld with
+        | Some ty -> TEProj (rcd, fld, ty)
+        | _ -> raise (missing_field fld (ty_pretty tyrec)))
       | TyVar ({ contents = Unbound(id, row) } as tv) ->
         let fld_ty = fresh_unbound_var() in
         let row = union_rows env row (Some [(fld, fld_ty)]) in
@@ -403,6 +436,26 @@ let%test "row2" =
   let t = typ x in
   Poly.equal (ty_pretty t) "bool"
 
+let%test "row_if" =
+  let open Five() in
+  let prog = (
+    [],
+    EIf(EBool true, ERecord [("x", EBool true)], ERecord[("x", EBool true); ("y", EBool true)])
+  ) in
+  assert_raises
+    (fun () -> typecheck_prog prog)
+    (UnificationFailure "failed to unify type {x: bool} with {x: bool, y: bool}")
+
+let%test "row_with" =
+  let open Five() in
+  let prog = (
+    [],
+    EWith(ERecord [("x", EBool  true)], [("y", EBool true)])
+  ) in
+  assert_raises
+    (fun () -> typecheck_prog prog)
+    (MissingField "missing field y in {x: bool}")
+
 let%test "let" =
   let open Five() in
   let prog = (
@@ -422,7 +475,7 @@ let%test "let_nogen" =
   ) in
   assert_raises
     (fun () -> typecheck_prog prog)
-    (UnificationFailure "failed to unify type ?2{} with bool")
+    (UnificationFailure "failed to unify type {} with bool")
 
 let%test "let_ann" =
   let open Five() in
