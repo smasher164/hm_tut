@@ -7,12 +7,15 @@ module Four() = struct
     | TyBool (* Bool *)
     | TyArrow of ty * ty (* Function type: T1 -> T2 *)
     | TyVar of tv ref (* Type variable: held behind a mutable reference. *)
-    | TyRecord of record_ty
     | TyName of id (* Type name: Foo *)
   and record_ty = (id * ty) list
+  and row_constraint =
+    | NoRow (* No row constraint. *)
+    | OpenRow of record_ty (* Must contain at least these fields (from EProj/EWith). *)
+    | ClosedRow of record_ty (* Must contain exactly these fields (from ERecord). *)
   and tv = (* A type variable *)
-    | Unbound of id * (record_ty option)
-      (* Unbound type variable: Holds the type variable's unique name. *)
+    | Unbound of id * row_constraint
+      (* Unbound type variable: Holds the type variable's unique name and any row constraint. *)
     | Link of ty (* Link type variable: Holds a reference to a type. *)
   (* Type declaration/constructor. All type declarations are nominal records. *)
   type tycon = {
@@ -60,7 +63,6 @@ module Four() = struct
     | TyBool -> "TyBool"
     | TyVar _ -> "TyVar"
     | TyArrow _ -> "TyArrow"
-    | TyRecord _ -> "TyRecord"
     | TyName _ -> "TyName"
 
   let ty_fields f flds =
@@ -72,26 +74,34 @@ module Four() = struct
     match force ty with
     | TyBool -> "bool"
     | TyVar { contents = Link _ } -> failwith "unexpected: Link"
-    | TyVar { contents = Unbound(id, None) } -> id
-    | TyVar { contents = Unbound(id, Some flds) } ->
+    | TyVar { contents = Unbound(id, NoRow) } -> id
+    | TyVar { contents = Unbound(id, OpenRow flds) } ->
       Printf.sprintf "%s{%s}" id (ty_fields ty_pretty flds)
+    | TyVar { contents = Unbound(_, ClosedRow flds) } ->
+      Printf.sprintf "{%s}" (ty_fields ty_pretty flds)
     | TyArrow (from, dst) ->
       ty_pretty from ^ " -> " ^ ty_pretty dst
-    | TyRecord flds -> Printf.sprintf "{%s}" (ty_fields ty_pretty flds)
     | TyName name -> name
-  
+
   let rec ty_debug ty =
     match ty with
     | TyBool -> "TyBool"
     | TyVar { contents = Link ty } ->
         Printf.sprintf "TyVar(Link(%s))" (ty_debug ty)
-    | TyVar { contents = Unbound(id, None) } -> Printf.sprintf "TyVar(Unbound %s)" id
-    | TyVar { contents = Unbound(id, Some flds) } ->
-      Printf.sprintf "TyVar(Unbound(%s, %s))" id (ty_fields ty_debug flds)
+    | TyVar { contents = Unbound(id, NoRow) } -> Printf.sprintf "TyVar(Unbound %s)" id
+    | TyVar { contents = Unbound(id, OpenRow flds) } ->
+      Printf.sprintf "TyVar(Unbound(%s, OpenRow{%s}))" id (ty_fields ty_debug flds)
+    | TyVar { contents = Unbound(id, ClosedRow flds) } ->
+      Printf.sprintf "TyVar(Unbound(%s, ClosedRow{%s}))" id (ty_fields ty_debug flds)
     | TyArrow(from, dst) ->
       "(" ^ ty_debug from ^ " -> " ^ ty_debug dst ^ ")"
-    | TyRecord flds -> Printf.sprintf "TyRecord{%s}" (ty_fields ty_debug flds)
     | TyName name -> name
+
+  let print_row f row =
+    match row with
+    | NoRow -> "NoRow"
+    | OpenRow flds -> Printf.sprintf "OpenRow{%s}" (ty_fields f flds)
+    | ClosedRow flds -> Printf.sprintf "ClosedRow{%s}" (ty_fields f flds)
 
   
   exception Undefined of string
@@ -101,6 +111,7 @@ module Four() = struct
   exception OccursCheck
   exception TypeError of string
   exception Expected of string
+  exception RowMismatch of string
 
   let undefined_error kind name =
       Undefined (Printf.sprintf "%s %s not defined" kind name)
@@ -121,6 +132,9 @@ module Four() = struct
 
   let expected_ty_error expected got =
     Expected (Printf.sprintf "expected type %s, got %s" expected got)
+
+  let row_mismatch row1 row2 =
+    RowMismatch (Printf.sprintf "%s and %s" (print_row ty_pretty row1) (print_row ty_pretty row2))
 
   (* Lookup a variable's type in the environment. *)
   let lookup_var_type name (e : env) : ty =
@@ -151,27 +165,36 @@ module Four() = struct
   let gensym_counter = ref 0
 
   (* Generate a fresh unbound type variable. *)
-  let fresh_unbound_var ?row () =
+  let fresh_unbound_var ?(row=NoRow) () =
     let n = !gensym_counter in
     Int.incr gensym_counter;
     let tvar = "?" ^ Int.to_string n in
     TyVar (ref (Unbound(tvar, row)))
 
-  let row_iter (row: record_ty option) f =
-    Option.iter row ~f:(fun row -> List.iter row ~f)
+  let row_iter (row: row_constraint) f =
+    match row with
+    | NoRow -> ()
+    | OpenRow flds | ClosedRow flds -> List.iter flds ~f
 
-  let rec union_rows env (row_a: record_ty option) (row_b: record_ty option) : record_ty option =
+  let rec union_rows env (row_a: row_constraint) (row_b: row_constraint) : row_constraint =
     match (row_a, row_b) with
-    | None, None -> None
-    | None, Some flds | Some flds, None -> Some flds
-    | Some row_a, Some row_b ->
-      Some (List.dedup_and_sort (row_a @ row_b) ~compare:(fun (f1,t1) (f2,t2) ->
+    | NoRow, row | row, NoRow -> row
+    | OpenRow row_a, OpenRow row_b ->
+      OpenRow (List.dedup_and_sort (row_a @ row_b) ~compare:(fun (f1,t1) (f2,t2) ->
         if f1 = f2 then (unify env t1 t2; 0)
         else Poly.compare (f1,t1) (f2,t2)))
-
+    | OpenRow o_row, ClosedRow c_row | ClosedRow c_row, OpenRow o_row ->
+      List.iter o_row (fun (id,ty) ->
+        if not (fld_exists env c_row id ty) then
+          raise (row_mismatch row_a row_b)); ClosedRow c_row
+    | ClosedRow flds1, ClosedRow flds2 when Int.equal (List.length flds1) (List.length flds2) ->
+      List.iter flds1 (fun (id,ty) ->
+        if not (fld_exists env flds2 id ty) then
+          raise (row_mismatch row_a row_b)); ClosedRow flds1
+    | _ -> raise (row_mismatch row_a row_b)
 
   and fld_exists env (rcd: record_ty) id ty =
-    List.exists rcd ~f:(fun (f,t) -> f == id && (unify env t ty; true))
+    List.exists rcd ~f:(fun (f,t) -> String.equal f id && (unify env t ty; true))
 
   (* Occurs check: check if a type variable occurs in a type. If it does, raise
     an exception. *)
@@ -206,37 +229,20 @@ module Four() = struct
       (match ty with
       | TyName tname ->
         let tc = lookup_tycon tname env in
-        row_iter tv_row (fun (id,ty) ->
-          (* Check that the type constructor contains all fields in tv_row *)
-          if not (fld_exists env tc.ty id ty) then
-            raise (missing_field id tc.name)
-        )
-      | TyRecord flds as tyrec ->
-        row_iter tv_row (fun (id,ty) ->
-          if not (fld_exists env flds id ty) then
-            raise (missing_field id (ty_pretty tyrec))
-        )
+        ignore (union_rows env tv_row (ClosedRow tc.ty))
       | TyVar other when tv != other ->
         (* Union the rows of these two distinct type variables. *)
         let Unbound(id, other_row) = !other in
         row_iter other_row (fun (_, ty) -> occurs tv ty);
         let row = union_rows env tv_row other_row in
         other := Unbound(id, row)
-      | _ when Option.is_some tv_row -> raise (unify_failed t1 t2)
+      | _ when not (equal tv_row NoRow) -> raise (unify_failed t1 t2)
       | _ ->
         (* If either type is a type variable, ensure that the type variable does
            not occur in the type. *)
         occurs tv ty);
       (* Link the type variable to the type. *)
       tv := Link ty
-    | TyRecord flds1, TyRecord flds2 when (List.length flds1) == (List.length flds2) ->
-      (* Both types are records with the same name and number of fields. *)
-      let unify_fld (id1, ty1) (id2, ty2) =
-        if not (id1 == id2) then raise (unify_failed ty1 ty2)
-        else unify env ty1 ty2
-      in
-      (* Unify their corresponding fields. *)
-      List.iter2_exn ~f:unify_fld flds1 flds2
     | TyName a, TyName b when equal a b -> () (* The type names are the same. *)
     | _ ->
       (* Unification has failed. *)
@@ -294,29 +300,25 @@ module Four() = struct
     | ERecord rec_lit ->
       let rec_lit = List.map rec_lit ~f:(fun (id, x) -> (id, infer env x)) in
       let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
-      TERecord (rec_lit, TyRecord flds)
+      TERecord (rec_lit, fresh_unbound_var ~row:(ClosedRow flds) ())
     | EWith (rcd, flds) ->
       let rcd = infer env rcd in
       let rec_lit = List.map flds ~f:(fun (id, x) -> (id, infer env x)) in
       let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
-      let row = fresh_unbound_var ~row:flds () in
+      let row = fresh_unbound_var ~row:(OpenRow flds) () in
       unify env (typ rcd) row;
       TEWith (rcd, rec_lit, typ rcd)
     | EProj (rcd, fld) ->
       let rcd = infer env rcd in
-      (match typ rcd with
+      (match force (typ rcd) with
       | TyName tname ->
         let tc = lookup_tycon tname env in
         (match List.Assoc.find tc.ty ~equal fld with
         | Some ty -> TEProj (rcd, fld, ty)
         | _ -> raise (missing_field fld tc.name))
-      | TyRecord flds as tyrec ->
-        (match List.Assoc.find flds ~equal fld with
-        | Some ty -> TEProj (rcd, fld, ty)
-        | _ -> raise (missing_field fld (ty_pretty tyrec)))
       | TyVar ({ contents = Unbound(id, row) } as tv) ->
-        let fld_ty = fresh_unbound_var() in
-        let row = union_rows env row (Some [(fld, fld_ty)]) in
+        let fld_ty = fresh_unbound_var () in
+        let row = union_rows env row (OpenRow [(fld, fld_ty)]) in
         tv := Unbound(id, row);
         TEProj(rcd, fld, fld_ty)
       | ty -> raise (expected_ty_error "TyName or TyVar" (ty_kind ty)))
@@ -422,7 +424,7 @@ let%test "row_if" =
   ) in
   assert_raises
     (fun () -> typecheck_prog prog)
-    (UnificationFailure "failed to unify type {x: bool} with {x: bool, y: bool}")
+    (RowMismatch "ClosedRow{x: bool} and ClosedRow{x: bool, y: bool}")
 
 let%test "row_with" =
   let open Four() in
@@ -432,7 +434,7 @@ let%test "row_with" =
   ) in
   assert_raises
     (fun () -> typecheck_prog prog)
-    (MissingField "missing field y in {x: bool}")
+    (RowMismatch "ClosedRow{x: bool} and OpenRow{y: bool}")
 
 let%test "let" =
   let open Four() in
