@@ -105,7 +105,6 @@ module Five() = struct
     | OpenRow flds -> Printf.sprintf "OpenRow{%s}" (ty_fields f flds)
     | ClosedRow flds -> Printf.sprintf "ClosedRow{%s}" (ty_fields f flds)
 
-  
   exception Undefined of string
   exception DuplicateDefinition of string
   exception MissingField of string
@@ -116,15 +115,14 @@ module Five() = struct
   exception RowMismatch of string
 
   let undefined_error kind name =
-      Undefined (Printf.sprintf "%s %s not defined" kind name)
+    Undefined (Printf.sprintf "%s %s not defined" kind name)
 
   let duplicate_definition def =
     DuplicateDefinition (Printf.sprintf "duplicate definition of %s" def)
 
   let unify_failed t1 t2 =
     UnificationFailure
-      (Printf.sprintf "failed to unify type %s with %s" (ty_pretty t1)
-          (ty_pretty t2))
+      (Printf.sprintf "failed to unify type %s with %s" (ty_pretty t1) (ty_pretty t2))
 
   let missing_field field inside =
     MissingField (Printf.sprintf "missing field %s in %s" field inside)

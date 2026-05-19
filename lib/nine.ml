@@ -1,7 +1,7 @@
 open Base
 open Poly
 
-module Eight() = struct
+module Nine() = struct
   type id = string
   (* The scope is an integer counter that holds the depth of the current
    let binding. Every unbound type variable contains the scope at which
@@ -344,6 +344,12 @@ module Eight() = struct
         { type_params = tc.type_params; ty = TyRecord (tc.name, tc.ty) }
     | _ -> failwith "expected TyName or TyApp"
 
+  let rec is_value (x: texp) : bool =
+    match x with
+    | TEBool _ | TEVar _ | TELam _ -> true
+    | TERecord (_, rec_lit, _) -> List.for_all rec_lit ~f:(fun (_, fld) -> is_value fld)
+    | TEApp _ | TEIf _ | TEProj _ | TELet _ | TELetRec _ -> false
+
   let rec check env ty exp =
     match exp with
     | ERecord (tname, rec_lit) ->
@@ -440,7 +446,10 @@ module Eight() = struct
           | None -> infer env rhs
       in
       leave_scope();
-      let ty_gen = gen (typ rhs) in
+      let ty_gen = if is_value rhs
+        then gen (typ rhs)
+        else dont_generalize (typ rhs) 
+      in
       let env = (id, VarBind ty_gen) :: env in
       let body = infer env body in
       TELet ((id, ann, rhs), body, typ body)
@@ -465,7 +474,11 @@ module Eight() = struct
       in
       leave_scope();
       let generalized_bindings =
-          List.map ~f:(fun (id, _, rhs) -> (id, VarBind (gen (typ rhs)))) decls
+        List.map ~f:(fun (id, _, rhs) ->
+            let ty_gen = if is_value rhs
+                then gen (typ rhs)
+                else dont_generalize (typ rhs) 
+            in (id, VarBind ty_gen)) decls
       in
       let env = generalized_bindings @ env in
       let body = infer env body in
@@ -487,35 +500,35 @@ let assert_raises f e =
   with exn -> equal exn e
 
 let%test "basic" =
-  let open Eight() in
+  let open Nine() in
   let prog = ([], EApp(ELam("x", EVar "x"), EBool true)) in
   let x = typecheck_prog prog in
   let t = typ x in
   Poly.equal (ty_pretty t) "bool"
 
 let%test "basic_error" =
-  let open Eight() in
+  let open Nine() in
   let prog = ([], EApp(ELam("f", EApp(EVar "f", EBool true)), EBool true)) in
   assert_raises
     (fun () -> typecheck_prog prog)
     (UnificationFailure "failed to unify type bool -> ?1 with bool")
 
 let%test "if" =
-  let open Eight() in
+  let open Nine() in
   let prog = ([], EIf(EBool true, EBool false, EApp(ELam("x", EVar "x"), EBool true))) in
   let x = typecheck_prog prog in
   let t = typ x in
   Poly.equal (ty_pretty t) "bool"
 
 let%test "if_error" =
-  let open Eight() in
+  let open Nine() in
   let prog = ([], EIf(EBool true, EBool false, ELam("x", EVar "x"))) in
   assert_raises
     (fun () -> typecheck_prog prog)
     (UnificationFailure "failed to unify type bool with ?0 -> ?0")
 
 let%test "record" =
-  let open Eight() in
+  let open Nine() in
   let prog = (
     [{name = "Foo"; type_params = []; ty = [("x", TyBool); ("y", TyArrow(TyBool, TyBool))] }],
     EApp(EProj(ERecord("Foo", [("x", EBool true); ("y", ELam("x", EVar "x"))]), "y"), EBool true)
@@ -525,7 +538,7 @@ let%test "record" =
   Poly.equal (ty_pretty t) "bool"
 
 let%test "record_error" =
-  let open Eight() in
+  let open Nine() in
   let prog = (
     [{name = "Foo"; type_params = []; ty = [("x", TyBool); ("y", TyArrow(TyBool, TyBool))] }],
     EProj(ERecord("Foo", [("y", EBool false)]), "y")
@@ -535,7 +548,7 @@ let%test "record_error" =
     (TypeError "expression does not have type Foo{x: bool, y: bool -> bool}")
 
 let%test "let" =
-  let open Eight() in
+  let open Nine() in
   let prog = (
     [{name = "A"; type_params = []; ty = [("x", TyBool)]}],
     ELet(("r", None, ERecord("A", [("x", EBool true)])), EProj(EVar "r", "x"))
@@ -545,7 +558,7 @@ let%test "let" =
   Poly.equal (ty_pretty t) "bool"
 
 let%test "let_ann" =
-  let open Eight() in
+  let open Nine() in
   let prog = (
     [{name = "A"; type_params = []; ty = []}],
     ELet(("x", Some { type_params = []; ty = TyName "A" }, EBool true), EVar "x")
@@ -555,7 +568,7 @@ let%test "let_ann" =
     (TypeError "expression does not have type A")
 
 let%test "let_rec" =
-  let open Eight() in
+  let open Nine() in
   let prog = ([], ELetRec(
     [("f", None, ELam("x", EIf(EVar "x", EApp(EVar "g", EVar "x"), EVar "x")));
     ("g", None, ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"), EVar "x")))],
@@ -567,7 +580,7 @@ let%test "let_rec" =
   Poly.equal (ty_pretty t) "bool"
 
 let%test "let_rec_error" =
-  let open Eight() in
+  let open Nine() in
   let prog = (
     [{name = "A"; type_params = []; ty = []}],
     ELetRec(
@@ -580,7 +593,7 @@ let%test "let_rec_error" =
     (UnificationFailure "failed to unify type bool with A")
 
 let%test "let_gen" =
-  let open Eight() in
+  let open Nine() in
   let prog = (
     [{name = "A"; type_params = []; ty = []}],
     ELet(("f", None, ELam("x", EVar "x")),
@@ -592,7 +605,7 @@ let%test "let_gen" =
   Poly.equal (ty_pretty t) "bool"
 
 let%test "fix" =
-  let open Eight() in
+  let open Nine() in
   let prog = (
     [],
     ELetRec([("fix", None, ELam("f", ELam("x", EApp(EApp(EVar "f", EApp(EVar "fix", EVar "f")), EVar "x"))))],
@@ -603,7 +616,7 @@ let%test "fix" =
   Poly.equal (ty_pretty t) "bool -> bool"
 
 let%test "let_gen_ann" =
-  let open Eight() in
+  let open Nine() in
   let prog = (
     [{name = "A"; type_params = []; ty = []}],
     ELet(("f", Some {type_params = ["'a"]; ty = TyArrow(TyName "'a", TyBool)}, ELam("x", EBool true)),
@@ -615,7 +628,7 @@ let%test "let_gen_ann" =
   Poly.equal (ty_pretty t) "bool"
 
 let%test "let_gen_error" = 
-  let open Eight() in
+  let open Nine() in
   let prog = (
     [{name = "A"; type_params = []; ty = []}],
     ELet(("f", Some {type_params = ["'a"]; ty = TyArrow(TyName "'a", TyName "A")}, ELam("x", EBool true)), EApp(EVar "f", EBool true))
@@ -625,7 +638,7 @@ let%test "let_gen_error" =
     (TypeError "expression does not have type ?1 -> A")
 
 let%test "let_gen_scope_error" =
-  let open Eight() in
+  let open Nine() in
   let prog = (
     [],
     EApp(EApp(ELam("x", ELet(("y", None, EVar "x"), EVar "y")), EBool true), EBool true)
@@ -635,7 +648,7 @@ let%test "let_gen_scope_error" =
     (UnificationFailure "failed to unify type bool with bool -> ?2")
 
 let%test "generic_tycon" =
-  let open Eight() in
+  let open Nine() in
   let prog = (
     [{name = "box"; type_params = ["'a"]; ty = [("x", TyName "'a")]}],
     ELet(("r", None, ERecord("box", [("x", EBool true)])), EVar "r")
@@ -645,7 +658,7 @@ let%test "generic_tycon" =
   Poly.equal (ty_pretty t) "box bool"
 
 let%test "generic_tycon_let_gen" =
-  let open Eight() in
+  let open Nine() in
   let prog = (
     [{name = "box"; type_params = ["'a"]; ty = [("x", TyName "'a")]}],
     ELet(("f", None, ELam("v",
@@ -658,7 +671,7 @@ let%test "generic_tycon_let_gen" =
   Poly.equal (ty_pretty t) "box bool"
 
 let%test "generic_tycon_error" =
-  let open Eight() in
+  let open Nine() in
   let prog = (
     [{name = "box"; type_params = ["'a"]; ty = [("x", TyName "'a"); ("y", TyBool)]}],
     EProj(ERecord("box", [("x", EBool true)]), "x")
@@ -666,3 +679,57 @@ let%test "generic_tycon_error" =
   assert_raises
     (fun () -> typecheck_prog prog)
     (TypeError "expression does not have type box{x: ?0, y: bool}")
+
+let%test "value_restriction" =
+  let open Nine() in
+  let prog = (
+    [
+      {name = "Ref"; type_params = ["'a"]; ty = [("value", TyName "'a")]};
+      {name = "Unit"; type_params = []; ty = []}
+    ],
+    ELet(("ref", None, ELam("x", ERecord("Ref", [("value", EVar "x")]))),
+    ELet(("deref", None, ELam("r", 
+      ELet(("r", 
+        Some { type_params = ["'a"]; ty = TyApp[TyName "Ref"; TyName "'a"] },
+        EVar "r"),
+      EProj(EVar "r", "value")))),
+    ELet(("update", Some {type_params = ["'a"]; ty =
+      TyArrow(
+        TyApp[TyName "Ref"; TyName "'a"],
+        TyArrow(TyName "'a", TyName "Unit"))},
+      ELam("r", ELam("x", ERecord("Unit", [])))),
+    ELet(("r", None, EApp(EVar "ref", ELam("x", EBool true))),
+    ELet(("_", None, EApp(EApp(EVar "update", EVar "r"),
+      ELam("x", EIf(EVar "x", EBool false, EBool true)))),
+    EApp(EApp(EVar "update", EVar "r"), ELam("x", EBool false)))))))
+  ) in
+  let x = typecheck_prog prog in
+  let t = typ x in
+  Poly.equal (ty_pretty t) "Unit"
+
+let%test "value_restriction_error" =
+  let open Nine() in
+  let prog = (
+    [
+      {name = "Ref"; type_params = ["'a"]; ty = [("value", TyName "'a")]};
+      {name = "Unit"; type_params = []; ty = []}
+    ],
+    ELet(("ref", None, ELam("x", ERecord("Ref", [("value", EVar "x")]))),
+    ELet(("deref", None, ELam("r", 
+      ELet(("r", 
+        Some { type_params = ["'a"]; ty = TyApp[TyName "Ref"; TyName "'a"] },
+        EVar "r"),
+      EProj(EVar "r", "value")))),
+    ELet(("update", Some {type_params = ["'a"]; ty =
+      TyArrow(
+        TyApp[TyName "Ref"; TyName "'a"],
+        TyArrow(TyName "'a", TyName "Unit"))},
+      ELam("r", ELam("x", ERecord("Unit", [])))),
+    ELet(("r", None, EApp(EVar "ref", ELam("x", EBool true))),
+    ELet(("_", None, EApp(EApp(EVar "update", EVar "r"),
+      ELam("x", EIf(EVar "x", EBool false, EBool true)))),
+    EApp(EApp(EVar "deref", EVar "r"), ERecord("Unit", [])))))))
+  ) in
+  assert_raises
+    (fun () -> typecheck_prog prog)
+    (UnificationFailure "failed to unify type bool with Unit")
