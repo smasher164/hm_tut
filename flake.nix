@@ -6,15 +6,11 @@
   };
 
   outputs = { self, nixpkgs, flake-utils }:
-    let supportedSystems = [ "aarch64-linux" "i686-linux" "x86_64-linux" ];
+    let supportedSystems = [ "aarch64-linux" "i686-linux" "x86_64-linux" "aarch64-darwin" ];
     in flake-utils.lib.eachSystem supportedSystems (system:
       let
-        ocaml5Overlay = final: prev: {
-          ocamlPackages = prev.ocaml-ng.ocamlPackages_5_1;
-        };
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [ (ocaml5Overlay) ];
         };
       in {
         devShell = pkgs.mkShell {

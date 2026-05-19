@@ -4,21 +4,23 @@ open Poly
 module Six() = struct
   type id = string
   (* The scope is an integer counter that holds the depth of the current
-   let binding. Every unbound type variable contains the scope at which
-   it was created. *)
+    let binding. Every unbound type variable contains the scope at which
+    it was created. *)
   type scope = int
   type ty =
     | TyBool (* Bool *)
     | TyArrow of ty * ty (* Function type: T1 -> T2 *)
     | TyVar of tv ref (* Type variable: held behind a mutable reference. *)
-    | TyRecord of record_ty
-    | TyName of id (* Type name: Foo *)
+    | TyName of id (* Type name: Foo (a tycon, or a rigid type variable). *)
   and record_ty = (id * ty) list
+  and row_constraint =
+    | NoRow (* No row constraint. *)
+    | OpenRow of record_ty (* Must contain at least these fields (from EProj/EWith). *)
+    | ClosedRow of record_ty (* Must contain exactly these fields (from ERecord). *)
   and tv = (* A type variable *)
-    | Unbound of id * (record_ty option) * scope
-      (* Unbound type variable: Holds the type variable's unique name as well as
-        the scope at which it was created. *)
-    (* | Rigid of id * (record_ty option) *)
+    | Unbound of id * row_constraint * scope
+      (* Unbound type variable: Holds the type variable's unique name, any
+        row constraint, and the scope at which it was created. *)
     | Link of ty (* Link type variable: Holds a reference to a type. *)
   (* Type declaration/constructor. All type declarations are nominal records. *)
   type tycon = {
@@ -29,14 +31,16 @@ module Six() = struct
     the type parameters. It is separated from ty because in HM, a forall can
     only be at the top level of a type. *)
   type generic_ty = {
-      type_params: id list;
-      record_constraints: (id * record_ty) list;
-      ty : ty;
+    type_params : id list;
+    ty : ty;
   }
   type bind =
     | VarBind of generic_ty (* A variable binding maps to a generic type. *)
     | TypeBind of tycon (* A type binding maps to a type constructor. *)
-    | TypeVarBind of record_ty option
+    | TypeVarBind
+      (* Rigid type-variable marker. The binding's name is the rigid
+        `TyName "'a"`. With no row information attached, only NoRow tvars
+        can unify with a rigid. *)
   type env = (id * bind) list
   type exp =
     | EBool of bool (* true/false *)
@@ -44,8 +48,8 @@ module Six() = struct
     | ELam of id * exp (* fun x -> x *)
     | EApp of exp * exp (* f arg *)
     | EIf of exp * exp * exp (* if <exp> then <exp> else <exp> *)
-    | ERecord of record_lit (* {x = true, y = false} *)
-    | EWith of exp * record_lit (* { r with x = true, y = false} *)
+    | ERecord of record_lit (* {x = true, y = false} — anonymous *)
+    | EWith of exp * record_lit (* { r with x = true } *)
     | EProj of exp * id (* r.y *)
     | ELet of let_decl * exp (* let x : <type-annotation> = <exp> in <exp> *)
     | ELetRec of let_decl list * exp (* let rec <decls> in <exp> *)
@@ -77,7 +81,6 @@ module Six() = struct
     | TyBool -> "TyBool"
     | TyVar _ -> "TyVar"
     | TyArrow _ -> "TyArrow"
-    | TyRecord _ -> "TyRecord"
     | TyName _ -> "TyName"
 
   let ty_fields f flds =
@@ -89,29 +92,36 @@ module Six() = struct
     match force ty with
     | TyBool -> "bool"
     | TyVar { contents = Link _ } -> failwith "unexpected: Link"
-    | TyVar { contents = Unbound(id, None, _) } -> id
-    | TyVar { contents = Unbound(id, Some flds, _) } ->
+    | TyVar { contents = Unbound(id, NoRow, _) } -> id
+    | TyVar { contents = Unbound(id, OpenRow flds, _) } ->
       Printf.sprintf "%s{%s}" id (ty_fields ty_pretty flds)
+    | TyVar { contents = Unbound(_, ClosedRow flds, _) } ->
+      Printf.sprintf "{%s}" (ty_fields ty_pretty flds)
     | TyArrow (from, dst) ->
       ty_pretty from ^ " -> " ^ ty_pretty dst
-    | TyRecord flds -> Printf.sprintf "{%s}" (ty_fields ty_pretty flds)
     | TyName name -> name
-  
+
   let rec ty_debug ty =
     match ty with
     | TyBool -> "TyBool"
     | TyVar { contents = Link ty } ->
-        Printf.sprintf "TyVar(Link(%s))" (ty_debug ty)
-    | TyVar { contents = Unbound(id,None,scope) } ->
-        Printf.sprintf "TyVar(Unbound(%s,%d))" id scope
-    | TyVar { contents = Unbound(id, Some flds, scope) } ->
-      Printf.sprintf "TyVar(Unbound(%s, %s, %d))" id (ty_fields ty_debug flds) scope
+      Printf.sprintf "TyVar(Link(%s))" (ty_debug ty)
+    | TyVar { contents = Unbound(id, NoRow, scope) } ->
+      Printf.sprintf "TyVar(Unbound(%s,%d))" id scope
+    | TyVar { contents = Unbound(id, OpenRow flds, scope) } ->
+      Printf.sprintf "TyVar(Unbound(%s, OpenRow{%s}, %d))" id (ty_fields ty_debug flds) scope
+    | TyVar { contents = Unbound(id, ClosedRow flds, scope) } ->
+      Printf.sprintf "TyVar(Unbound(%s, ClosedRow{%s}, %d))" id (ty_fields ty_debug flds) scope
     | TyArrow(from, dst) ->
       "(" ^ ty_debug from ^ " -> " ^ ty_debug dst ^ ")"
-    | TyRecord flds -> Printf.sprintf "TyRecord{%s}" (ty_fields ty_debug flds)
     | TyName name -> name
 
-  
+  let print_row f row =
+    match row with
+    | NoRow -> "NoRow"
+    | OpenRow flds -> Printf.sprintf "OpenRow{%s}" (ty_fields f flds)
+    | ClosedRow flds -> Printf.sprintf "ClosedRow{%s}" (ty_fields f flds)
+
   exception Undefined of string
   exception DuplicateDefinition of string
   exception MissingField of string
@@ -119,17 +129,17 @@ module Six() = struct
   exception OccursCheck
   exception TypeError of string
   exception Expected of string
+  exception RowMismatch of string
 
   let undefined_error kind name =
-      Undefined (Printf.sprintf "%s %s not defined" kind name)
+    Undefined (Printf.sprintf "%s %s not defined" kind name)
 
   let duplicate_definition def =
     DuplicateDefinition (Printf.sprintf "duplicate definition of %s" def)
 
   let unify_failed t1 t2 =
     UnificationFailure
-      (Printf.sprintf "failed to unify type %s with %s" (ty_pretty t1)
-          (ty_pretty t2))
+      (Printf.sprintf "failed to unify type %s with %s" (ty_pretty t1) (ty_pretty t2))
 
   let missing_field field inside =
     MissingField (Printf.sprintf "missing field %s in %s" field inside)
@@ -139,6 +149,9 @@ module Six() = struct
 
   let expected_ty_error expected got =
     Expected (Printf.sprintf "expected type %s, got %s" expected got)
+
+  let row_mismatch row1 row2 =
+    RowMismatch (Printf.sprintf "%s and %s" (print_row ty_pretty row1) (print_row ty_pretty row2))
 
   (* Lookup a variable's type in the environment. *)
   let lookup_var_type name (e : env) : generic_ty =
@@ -151,6 +164,12 @@ module Six() = struct
     match List.Assoc.find e ~equal name with
     | Some (TypeBind t) -> t
     | _ -> raise (undefined_error "type" name)
+
+  (* Is this name in scope as a rigid type variable? *)
+  let is_typevar name (e : env) : bool =
+    match List.Assoc.find e ~equal name with
+    | Some TypeVarBind -> true
+    | _ -> false
 
   (* Get the type of a typed expression. *)
   let typ (texp : texp) : ty =
@@ -173,40 +192,44 @@ module Six() = struct
   let enter_scope () = Int.incr current_scope
   let leave_scope () = Int.decr current_scope
 
-  (* Generate a fresh unbound type variable with a unique name and
-   the current scope. *)
-  let fresh_unbound_var ?row () =
+  (* Generate a fresh unbound type variable with a unique name, an optional
+    row constraint, and the current scope. *)
+  let fresh_unbound_var ?(row=NoRow) () =
     let n = !gensym_counter in
     Int.incr gensym_counter;
     let tvar = "?" ^ Int.to_string n in
     TyVar (ref (Unbound (tvar, row, !current_scope)))
 
-  (* let fresh_rigid_var ?row () =
-    let n = !gensym_counter in
-    Int.incr gensym_counter;
-    let tvar = "!" ^ Int.to_string n in
-    TyVar (ref (Rigid (tvar, row, !current_scope))) *)
+  let row_iter (row: row_constraint) f =
+    match row with
+    | NoRow -> ()
+    | OpenRow flds | ClosedRow flds -> List.iter flds ~f
 
-  let row_iter (row: record_ty option) f =
-    Option.iter row ~f:(fun row -> List.iter row ~f)
-
-  let rec union_rows env (row_a: record_ty option) (row_b: record_ty option) : record_ty option =
+  let rec union_rows env (row_a: row_constraint) (row_b: row_constraint) : row_constraint =
     match (row_a, row_b) with
-    | None, None -> None
-    | None, Some flds | Some flds, None -> Some flds
-    | Some row_a, Some row_b ->
-      Some (List.dedup_and_sort (row_a @ row_b) ~compare:(fun (f1,t1) (f2,t2) ->
+    | NoRow, row | row, NoRow -> row
+    | OpenRow row_a, OpenRow row_b ->
+      OpenRow (List.dedup_and_sort (row_a @ row_b) ~compare:(fun (f1,t1) (f2,t2) ->
         if f1 = f2 then (unify env t1 t2; 0)
         else Poly.compare (f1,t1) (f2,t2)))
+    | OpenRow o_row, ClosedRow c_row | ClosedRow c_row, OpenRow o_row ->
+      List.iter o_row (fun (id,ty) ->
+        if not (fld_exists env c_row id ty) then
+          raise (row_mismatch row_a row_b)); ClosedRow c_row
+    | ClosedRow flds1, ClosedRow flds2 when Int.equal (List.length flds1) (List.length flds2) ->
+      List.iter flds1 (fun (id,ty) ->
+        if not (fld_exists env flds2 id ty) then
+          raise (row_mismatch row_a row_b)); ClosedRow flds1
+    | _ -> raise (row_mismatch row_a row_b)
 
   and fld_exists env (rcd: record_ty) id ty =
-    List.exists rcd ~f:(fun (f,t) -> f == id && (unify env t ty; true))
+    List.exists rcd ~f:(fun (f,t) -> String.equal f id && (unify env t ty; true))
 
   (* Occurs check: check if a type variable occurs in a type. If it does, raise
     an exception. *)
   and occurs (src : tv ref) (ty : ty) : unit =
     (* Follow all the links. If we see a type variable, it will only be
-      Unbound. *)
+       Unbound. *)
     match force ty with
     | TyVar tgt when src == tgt ->
       (* src type variable occurs in ty. *)
@@ -242,114 +265,91 @@ module Six() = struct
       let Unbound(_, tv_row, src_scope) = !tv in
       (match ty with
       | TyName tname ->
-        let tc = lookup_tycon tname env in
-        row_iter tv_row (fun (id,ty) ->
-          (* Check that the type constructor contains all fields in tv_row *)
-          if not (fld_exists env tc.ty id ty) then
-            raise (missing_field id tc.name)
-        )
-      | TyRecord flds as tyrec ->
-        row_iter tv_row (fun (id,ty) ->
-          if not (fld_exists env flds id ty) then
-            raise (missing_field id (ty_pretty tyrec))
-        )
+        (* `TyName "X"` can be a rigid (an annotation's type parameter
+          currently in scope) or a tycon. A rigid carries no row information
+          in this chapter, so only a NoRow tvar can link to it; a row-
+          constrained tvar requires row polymorphism on the rigid, which we
+          don't have yet. For a tycon we treat the fields as a closed row,
+          same as the row-aware unification from five.ml. *)
+        if is_typevar tname env then
+          (match tv_row with
+           | NoRow -> ()  (* link will happen after the match, via tv := Link ty *)
+           | _ -> raise (unify_failed t1 t2))
+        else
+          let tc = lookup_tycon tname env in
+          ignore (union_rows env tv_row (ClosedRow tc.ty))
       | TyVar other when tv != other ->
-        (* Union the rows of these two distinct type variables. *)
+        (* Union the rows of these two distinct type variables, and lower
+          the surviving tvar's scope to the minimum. *)
         let Unbound(id, other_row, other_scope) = !other in
         row_iter other_row (fun (_, ty) -> occurs tv ty);
         let min_scope = min src_scope other_scope in
         let row = union_rows env tv_row other_row in
         other := Unbound(id, row, min_scope)
-      | _ when Option.is_some tv_row -> raise (unify_failed t1 t2)
+      | _ when not (equal tv_row NoRow) ->
+        (* The tvar carries a row constraint but the other side is not a
+          record-like type — no possible unification. *)
+        raise (unify_failed t1 t2)
       | _ ->
-        (* If either type is a type variable, ensure that the type variable does
-            not occur in the type. *)
+        (* If either type is a type variable, ensure that the type variable
+          does not occur in the type. occurs also lowers scopes. *)
         occurs tv ty);
       (* Link the type variable to the type. *)
       tv := Link ty
-    | TyRecord flds1, TyRecord flds2 when (List.length flds1) == (List.length flds2) ->
-      (* Both types are records with the same name and number of fields. *)
-      let unify_fld (id1, ty1) (id2, ty2) =
-        if not (id1 == id2) then raise (unify_failed ty1 ty2)
-        else unify env ty1 ty2
-      in
-      (* Unify their corresponding fields. *)
-      List.iter2_exn ~f:unify_fld flds1 flds2
     | TyName a, TyName b when equal a b -> () (* The type names are the same. *)
     | _ ->
       (* Unification has failed. *)
       raise (unify_failed t1 t2)
 
-(* Create and initialize a hash table of ids and fresh unbound type
-   variables. *)
-   (* let create_table_for_type_params (l: id list) (c: (id * record_ty) list) : (id, ty) Hashtbl.t =
-    let tbl =
-      match
-        Hashtbl.create_mapped
-            (module String)
-            ~get_key:Fn.id
-            ~get_data:(fun _ -> fresh_rigid_var ())
-            l
-      with
-      | `Ok tbl -> tbl
-      | `Duplicate_keys _ -> failwith "unreachable: duplicate keys in type params"
-    in
-    List.iter c ~f:(fun (tp, rc) ->
-      let TyVar tv = Hashtbl.find_exn tbl tp in
-      let Rigid (id, row, scope) = !tv in
-    (* inst ~tbl  *)
-    ) *)
+  (* The environment stores generic types, but sometimes we need to associate
+    a non-generalized type to a variable. This function wraps a type into a
+    trivial generic type (no quantified parameters). *)
+  let dont_generalize ty : generic_ty = { type_params = []; ty }
 
-  (* The environment stores generic types, but sometimes, we need to
-   associate a non-generalized type to a variable. This function
-   wraps a type into a generic type. *)
-  let dont_generalize ty : generic_ty = { type_params = []; record_constraints = []; ty }
-  
+  (* Generalize a type. Without row polymorphism, only tvars whose row is
+    `NoRow` can become type parameters. A tvar that has accumulated a row
+    constraint (e.g. from `r.x`) is *left as a tvar in the body* — it
+    didn't get generalized, so future uses of this binding share it,
+    making the function effectively monomorphic in that record shape. *)
   let gen (ty: ty) : generic_ty =
     let type_params = Hash_set.create (module String) in
     let rec gen' ty =
-        match force ty with
-        | TyVar { contents = Unbound (id, row, scope) } when scope > !current_scope ->
-          (*TODO: use row*)
-            Hash_set.add type_params id;
-            TyName id
-        | TyArrow (from, dst) ->
-            let from = gen' from in
-            let dst = gen' dst in
-            TyArrow(from, dst)
-        | TyRecord flds ->
-            let flds = List.map ~f:(fun (id, ty) -> (id, gen' ty)) flds in
-            TyRecord flds
-        | ty -> ty
+      match force ty with
+      | TyVar { contents = Unbound (id, NoRow, scope) } when scope > !current_scope ->
+        Hash_set.add type_params id;
+        TyName id
+      | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
+      | ty -> ty
     in
     let ty = gen' ty in
     let type_params = Hash_set.to_list type_params |> List.sort ~compare in
     { type_params; ty }
-  
-  (* Instantiate a generic type by replacing all the type parameters
-   with fresh unbound type variables. Ensure that the same ID gets
-   mapped to the same unbound type variable by using an (id, ty) Hashtbl. *)
-   let inst (gty: generic_ty) : ty =
-    let tbl = create_table_for_type_params gty.type_params in
-    let rec inst' (ty: ty) =
-        match force ty with
-        | TyName id as ty -> (
-            (* The quantified type variable will be referred to by a type name. *)
-            match Hashtbl.find tbl id with
-            | Some tv -> tv
-            | None -> ty)
-        | TyArrow (from, dst) ->
-            (* Instantiate the type vars in the arrow type. *)
-            let from_inst = inst' from in
-            let dst_inst = inst' dst in
-            TyArrow (from_inst, dst_inst)
-        | TyRecord (id, flds) ->
-            (* Instantiate the type vars in the record fields. *)
-            let inst_fld (id, ty) = (id, inst' ty) in
-            TyRecord (id, List.map ~f:inst_fld flds)
-        | ty -> ty
+
+  (* Instantiate (for *use* sites). Each type parameter gets a fresh
+    unbound tvar; `TyName` references that match a parameter are
+    rewritten to that tvar. No row substitution — type parameters
+    don't carry rows in this chapter. *)
+  let inst (gty: generic_ty) : ty =
+    let tbl = Hashtbl.create (module String) in
+    List.iter gty.type_params ~f:(fun pid ->
+      Hashtbl.set tbl ~key:pid ~data:(fresh_unbound_var ()));
+    let rec inst' ty =
+      match force ty with
+      | TyName id as ty -> (
+        match Hashtbl.find tbl id with
+        | Some tv -> tv
+        | None -> ty)
+      | TyArrow (from, dst) -> TyArrow (inst' from, inst' dst)
+      | ty -> ty
     in
     if Hashtbl.is_empty tbl then gty.ty else inst' gty.ty
+
+  (* Turn a generic_ty into its rigid form for *check* sites. Each declared
+    `'a` becomes a rigid `TyName "'a"` exposed as a marker in the env. No
+    row constraints flow through the rigid (the next chapter adds that). *)
+  let as_rigid (gty: generic_ty) : env * ty =
+    let extras = List.map gty.type_params ~f:(fun id -> (id, TypeVarBind)) in
+    (extras, gty.ty)
 
   let rec check env ty exp =
     let texp = infer env exp in
@@ -358,7 +358,7 @@ module Six() = struct
         texp
     with UnificationFailure _ ->
         raise (type_error ty))
-  
+
   and infer (env : env) (exp : exp) : texp =
     match exp with
     | EBool b -> TEBool (b, TyBool) (* A true/false value is of type Bool. *)
@@ -366,7 +366,7 @@ module Six() = struct
       (* Variable is being used. Look up its type in the environment, *)
       let var_ty = lookup_var_type name env in
       (* instantiate its type by replacing all of its quantified type
-         variables with fresh unbound type variables.*)
+         variables with fresh unbound type variables. *)
       TEVar (name, inst var_ty)
     | ELam (param, body) ->
       (* Instantiate a fresh type variable for the lambda parameter, and
@@ -376,7 +376,7 @@ module Six() = struct
       (* Typecheck the body of the lambda with the extended environment. *)
       let body = infer env' body in
       (* Return a synthesized arrow type from the parameter to the body. *)
-      TELam (param, body, TyArrow ( ty_param, typ body ))
+      TELam (param, body, TyArrow (ty_param, typ body))
     | EApp (fn, arg) ->
       (* To typecheck a function application, first infer the types of the
           function and the argument. *)
@@ -386,7 +386,7 @@ module Six() = struct
           and synthesize an arrow type going from the argument to the
           result. *)
       let ty_res = fresh_unbound_var () in
-      let ty_arr = TyArrow (typ arg, ty_res ) in
+      let ty_arr = TyArrow (typ arg, ty_res) in
       (* Unify it with the function's type. *)
       unify env (typ fn) ty_arr;
       (* Return the result type. *)
@@ -399,97 +399,96 @@ module Six() = struct
       let thn = infer env thn in
       let els = infer env els in
       unify env (typ thn) (typ els);
-      (* Return the type of one of the branches. (we'll pick the "then"
-          branch) *)
+      (* Return the type of one of the branches. (we'll pick the "then" branch) *)
       TEIf (cond, thn, els, typ thn)
     | ERecord rec_lit ->
+      (* Anonymous record literal: closed row carrying the literal's fields.
+        Inferred as a fresh tvar so it can later unify with a tycon or
+        another row-constrained tvar. *)
       let rec_lit = List.map rec_lit ~f:(fun (id, x) -> (id, infer env x)) in
       let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
-      TERecord (rec_lit, TyRecord flds)
+      TERecord (rec_lit, fresh_unbound_var ~row:(ClosedRow flds) ())
     | EWith (rcd, flds) ->
       let rcd = infer env rcd in
       let rec_lit = List.map flds ~f:(fun (id, x) -> (id, infer env x)) in
       let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
-      let row = fresh_unbound_var ~row:flds () in
+      let row = fresh_unbound_var ~row:(OpenRow flds) () in
       unify env (typ rcd) row;
       TEWith (rcd, rec_lit, typ rcd)
     | EProj (rcd, fld) ->
       let rcd = infer env rcd in
-      (match typ rcd with
+      (match force (typ rcd) with
       | TyName tname ->
+        (* Rigid `TyName` (an annotation's type parameter) is opaque
+          without row polymorphism, so projection is rejected. Concrete
+          tycon names look up the tycon's record fields. *)
+        if is_typevar tname env then
+          raise (expected_ty_error "record" tname);
         let tc = lookup_tycon tname env in
         (match List.Assoc.find tc.ty ~equal fld with
         | Some ty -> TEProj (rcd, fld, ty)
         | _ -> raise (missing_field fld tc.name))
-      | TyRecord flds as tyrec ->
-        (match List.Assoc.find flds ~equal fld with
-        | Some ty -> TEProj (rcd, fld, ty)
-        | _ -> raise (missing_field fld (ty_pretty tyrec)))
       | TyVar ({ contents = Unbound(id, row, scope) } as tv) ->
-        let fld_ty = fresh_unbound_var() in
-        let row = union_rows env row (Some [(fld, fld_ty)]) in
+        let fld_ty = fresh_unbound_var () in
+        let row = union_rows env row (OpenRow [(fld, fld_ty)]) in
         tv := Unbound(id, row, scope);
         TEProj(rcd, fld, fld_ty)
       | ty -> raise (expected_ty_error "TyName or TyVar" (ty_kind ty)))
     | ELet ((id, ann, rhs), body) ->
-      (*=
-        match ann with
-        | Some ann ->
-          (* Do we need to increment/decrement scope here? *)
-          let (type_params, ty) = inst ann in
-          let env' = type_params :: env in
-          let rhs = check env' ty rhs in
-          let env'' = (id, VarBind (typ rhs)) :: env in
-          let body = infer env'' body in
-          TELet ((id, ann, rhs), body, typ body)
-        | None ->
-          enter_scope();
-          let rhs = infer env rhs in
-          leave_scope();
-          let ty_gen = gen (type rhs) in
-          let env = (id, VarBind ty_gen) :: env in
-          let body = infer env body in
-          TELet ((id, ann, rhs), body, typ body)
-      *)
       enter_scope();
       let rhs =
-          match ann with
-          | Some ann -> check env (inst ann) rhs
-          | None -> infer env rhs
+        match ann with
+        | Some ann ->
+          let (extras, check_ty) = as_rigid ann in
+          check (extras @ env) check_ty rhs
+        | None -> infer env rhs
       in
       leave_scope();
-      let ty_gen = gen (typ rhs) in
-      let env = (id, VarBind ty_gen) :: env in
-      let body = infer env body in
+      let ty_gen =
+        match ann with
+        | Some ann -> ann
+        | None -> gen (typ rhs)
+      in
+      let env_body = (id, VarBind ty_gen) :: env in
+      let body = infer env_body body in
       TELet ((id, ann, rhs), body, typ body)
     | ELetRec (decls, body) ->
       enter_scope();
       let deduped_defs = Hash_set.create (module String) in
-      let env_decls = List.map decls ~f:(fun (id, ann, _) ->
-          match Hash_set.strict_add deduped_defs id with
-          | Ok _ ->
-              let ty_decl =
-                  match ann with
-                  | Some ann -> inst ann
-                  | None -> fresh_unbound_var()
-              in (id, VarBind (dont_generalize ty_decl))
-          | Error _ -> raise (duplicate_definition id) 
-      ) in
-      let env' = env_decls @ env in
-      let decls = List.map2_exn env_decls decls ~f:(
-          fun (id, VarBind ty_bind) (_, ann, rhs) ->
-              let rhs = check env' (inst ty_bind) rhs in
-              (id, ann, rhs))
+      List.iter decls ~f:(fun (id, _, _) ->
+        match Hash_set.strict_add deduped_defs id with
+        | Ok _ -> ()
+        | Error _ -> raise (duplicate_definition id));
+      let prepared = List.map decls ~f:(fun (id, ann, rhs) ->
+        match ann with
+        | Some ann ->
+          let (extras, check_ty) = as_rigid ann in
+          (id, Some ann, rhs, extras, check_ty)
+        | None ->
+          (id, None, rhs, [], fresh_unbound_var ()))
+      in
+      let env_decls = List.map prepared ~f:(fun (id, _, _, _, check_ty) ->
+        (id, VarBind (dont_generalize check_ty)))
+      in
+      let env_with_decls = env_decls @ env in
+      let tdecls : tlet_decl list = List.map prepared ~f:(fun (id, ann, rhs, extras, check_ty) ->
+        let trhs = check (extras @ env_with_decls) check_ty rhs in
+        (id, ann, trhs))
       in
       leave_scope();
-      let generalized_bindings =
-          List.map ~f:(fun (id, _, rhs) -> (id, VarBind (gen (typ rhs)))) decls
+      let generalized_bindings = List.map tdecls ~f:(fun (id, ann, rhs) ->
+        let ty_gen =
+          match ann with
+          | Some ann -> ann
+          | None -> gen (typ rhs)
+        in
+        (id, VarBind ty_gen))
       in
-      let env = generalized_bindings @ env in
-      let body = infer env body in
-      TELetRec (decls, body, typ body)
-  
-  let typecheck_prog ((tl,exp): prog) : texp =
+      let env_body = generalized_bindings @ env in
+      let body = infer env_body body in
+      TELetRec (tdecls, body, typ body)
+
+  let typecheck_prog ((tl, exp): prog) : texp =
     let deduped_defs = Hash_set.create (module String) in
     let env = List.map tl ~f:(fun tc ->
       match Hash_set.strict_add deduped_defs tc.name with
@@ -508,8 +507,7 @@ let%test "basic" =
   let open Six() in
   let prog = ([], EApp(ELam("x", EVar "x"), EBool true)) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "basic_error" =
   let open Six() in
@@ -522,8 +520,7 @@ let%test "if" =
   let open Six() in
   let prog = ([], EIf(EBool true, EBool false, EApp(ELam("x", EVar "x"), EBool true))) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "if_error" =
   let open Six() in
@@ -535,32 +532,35 @@ let%test "if_error" =
 let%test "record" =
   let open Six() in
   let prog = (
-    [{name = "Foo"; ty = [("x", TyBool); ("y", TyArrow(TyBool, TyBool))] }],
-    EApp(EProj(ERecord("Foo", [("x", EBool true); ("y", ELam("x", EVar "x"))]), "y"), EBool true)
+    [{name = "Foo"; ty = [("x", TyBool); ("y", TyArrow(TyBool, TyBool))]}],
+    EApp(EProj(ERecord [("x", EBool true); ("y", ELam("x", EVar "x"))], "y"), EBool true)
   ) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool"
 
-let%test "record_error" =
+let%test "record_anonymous" =
   let open Six() in
-  let prog = (
-    [{name = "Foo"; ty = [("x", TyBool); ("y", TyArrow(TyBool, TyBool))] }],
-    EProj(ERecord("Foo", [("y", EBool false)]), "y")
-  ) in
-  assert_raises
-    (fun () -> typecheck_prog prog)
-    (TypeError "expression does not have type Foo{x: bool, y: bool -> bool}")
+  let prog = ([], EProj(ERecord [("y", EBool false)], "y")) in
+  let x = typecheck_prog prog in
+  Poly.equal (ty_pretty (typ x)) "bool"
+
+let%test "row_immediate_use" =
+  (* `(fun r -> r.x) {x = true}` — the row constraint on r is resolved
+    before any let-generalization happens, so this works regardless of
+    whether we generalize rows. *)
+  let open Six() in
+  let prog = ([], EApp(ELam("r", EProj(EVar "r", "x")), ERecord [("x", EBool true)])) in
+  let x = typecheck_prog prog in
+  Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "let" =
   let open Six() in
   let prog = (
     [{name = "A"; ty = [("x", TyBool)]}],
-    ELet(("r", None, ERecord("A", [("x", EBool true)])), EProj(EVar "r", "x"))
+    ELet(("r", None, ERecord [("x", EBool true)]), EProj(EVar "r", "x"))
   ) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "let_ann" =
   let open Six() in
@@ -576,79 +576,165 @@ let%test "let_rec" =
   let open Six() in
   let prog = ([], ELetRec(
     [("f", None, ELam("x", EIf(EVar "x", EApp(EVar "g", EVar "x"), EVar "x")));
-    ("g", None, ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"), EVar "x")))],
+     ("g", None, ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"), EVar "x")))],
     EApp(EVar "f", EBool true)
-  ))
-  in
+  )) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "let_rec_error" =
   let open Six() in
   let prog = (
     [{name = "A"; ty = []}],
     ELetRec(
-    [("f", None, ELam("x", EIf(EVar "x", EApp(EVar "g", EVar "x"), EVar "x")));
-    ("g", None, ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"), ERecord("A", []))))],
-    EApp(EVar "f", EBool true))
+      [("f", None, ELam("x", EIf(EVar "x", EApp(EVar "g", EVar "x"), EVar "x")));
+       ("g", Some {type_params = []; ty = TyArrow(TyBool, TyName "A")},
+        ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"), ERecord [])))],
+      EApp(EVar "f", EBool true))
   ) in
   assert_raises
     (fun () -> typecheck_prog prog)
-    (UnificationFailure "failed to unify type bool with A")
+    (UnificationFailure "failed to unify type A with bool")
 
 let%test "let_gen" =
   let open Six() in
-  let prog = (
-    [{name = "A"; ty = []}],
+  let prog = ([],
     ELet(("f", None, ELam("x", EVar "x")),
-      ELet(("_", None, EApp(EVar "f", ERecord("A", []))),
+      ELet(("_", None, EApp(EVar "f", ERecord [])),
         EApp(EVar "f", EBool true)))
   ) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "fix" =
   let open Six() in
-  let prog = (
-    [],
-    ELetRec([("fix", None, ELam("f", ELam("x", EApp(EApp(EVar "f", EApp(EVar "fix", EVar "f")), EVar "x"))))],
-      EApp(EVar "fix", ELam("f", ELam("arg", EIf(EVar "arg", EApp(EVar "f", EBool false), EBool true)))))
+  let prog = ([],
+    ELetRec([("fix", None,
+      ELam("f", ELam("x", EApp(EApp(EVar "f", EApp(EVar "fix", EVar "f")), EVar "x"))))],
+      EApp(EVar "fix",
+        ELam("f", ELam("arg",
+          EIf(EVar "arg", EApp(EVar "f", EBool false), EBool true)))))
   ) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool -> bool"
+  Poly.equal (ty_pretty (typ x)) "bool -> bool"
 
 let%test "let_gen_ann" =
   let open Six() in
   let prog = (
     [{name = "A"; ty = []}],
-    ELet(("f", Some {type_params = ["'a"]; ty = TyArrow(TyName "'a", TyBool)}, ELam("x", EBool true)),
-      EApp(EVar "f", ERecord("A", []))
-    )
+    ELet(("f", Some {type_params = ["'a"]; ty = TyArrow(TyName "'a", TyBool)},
+      ELam("x", EBool true)),
+      EApp(EVar "f", ERecord []))
   ) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool"
 
-let%test "let_gen_error" = 
+let%test "let_gen_error" =
   let open Six() in
   let prog = (
     [{name = "A"; ty = []}],
-    ELet(("f", Some {type_params = ["'a"]; ty = TyArrow(TyName "'a", TyName "A")}, ELam("x", EBool true)),
+    ELet(("f", Some {type_params = ["'a"]; ty = TyArrow(TyName "'a", TyName "A")},
+      ELam("x", EBool true)),
       EApp(EVar "f", EBool true))
   ) in
   assert_raises
     (fun () -> typecheck_prog prog)
-    (TypeError "expression does not have type ?1 -> A")
+    (TypeError "expression does not have type 'a -> A")
 
 let%test "let_gen_scope_error" =
   let open Six() in
-  let prog = (
-    [],
+  let prog = ([],
     EApp(EApp(ELam("x", ELet(("y", None, EVar "x"), EVar "y")), EBool true), EBool true)
   ) in
   assert_raises
     (fun () -> typecheck_prog prog)
     (UnificationFailure "failed to unify type bool with bool -> ?2")
+
+let%test "let_typevar_ref" =
+  let open Six() in
+  let prog = ([],
+    ELet(("f",
+      Some {type_params = ["'a"]; ty = TyArrow(TyName "'a", TyName "'a")},
+      ELam("x", ELet(("y", Some {type_params = []; ty = TyName "'a"}, EVar "x"), EVar "y"))),
+      EApp(EVar "f", EBool true))
+  ) in
+  let x = typecheck_prog prog in
+  Poly.equal (ty_pretty (typ x)) "bool"
+
+let%test "let_rec_typevar_ref" =
+  let open Six() in
+  let prog = ([],
+    ELetRec(
+      [("f",
+        Some {type_params = ["'a"]; ty = TyArrow(TyName "'a", TyName "'a")},
+        ELam("x", ELet(("y", Some {type_params = []; ty = TyName "'a"}, EVar "x"), EVar "y")))],
+      EApp(EVar "f", EBool true))
+  ) in
+  let x = typecheck_prog prog in
+  Poly.equal (ty_pretty (typ x)) "bool"
+
+let%test "let_rigid_ok" =
+  let open Six() in
+  let prog = ([],
+    ELet(("f",
+      Some {type_params = ["'a"]; ty = TyArrow(TyName "'a", TyName "'a")},
+      ELam("x", EVar "x")),
+      EApp(EVar "f", EBool true))
+  ) in
+  let x = typecheck_prog prog in
+  Poly.equal (ty_pretty (typ x)) "bool"
+
+let%test "let_rigid_error" =
+  let open Six() in
+  let prog = ([],
+    ELet(("f",
+      Some {type_params = ["'a"; "'b"]; ty = TyArrow(TyName "'a", TyName "'b")},
+      ELam("x", EVar "x")),
+      EVar "f")
+  ) in
+  assert_raises
+    (fun () -> typecheck_prog prog)
+    (TypeError "expression does not have type 'a -> 'b")
+
+let%test "let_rec_rigid_error" =
+  let open Six() in
+  let prog = ([],
+    ELetRec(
+      [("f",
+        Some {type_params = ["'a"; "'b"]; ty = TyArrow(TyName "'a", TyName "'b")},
+        ELam("x", EVar "x"))],
+      EVar "f")
+  ) in
+  assert_raises
+    (fun () -> typecheck_prog prog)
+    (TypeError "expression does not have type 'a -> 'b")
+
+(* The defining limit: row constraints don't flow through let-generalization.
+  `let f = fun r -> r.x` leaves r's row-constrained tvar in the body
+  un-generalized, so the first use specializes r's shape and a second
+  use with a different shape conflicts. *)
+let%test "let_gen_row_monomorphism" =
+  let open Six() in
+  let prog = ([],
+    ELet(("f", None, ELam("r", EProj(EVar "r", "x"))),
+      ELet(("_", None, EApp(EVar "f", ERecord [("x", EBool true)])),
+        EApp(EVar "f", ERecord [("x", EBool false); ("y", EBool true)])))
+  ) in
+  assert_raises
+    (fun () -> typecheck_prog prog)
+    (RowMismatch "ClosedRow{x: bool} and ClosedRow{x: bool, y: bool}")
+
+(* A row-polymorphic function can't be annotated either: the rigid `'a`
+  has no row, and a row-constrained tvar can't link to a rigid. This is
+  the row-poly story the next chapter unlocks. *)
+let%test "ann_row_poly_error" =
+  let open Six() in
+  let prog = ([],
+    ELet(("f",
+      Some {type_params = ["'a"]; ty = TyArrow(TyName "'a", TyBool)},
+      ELam("r", EProj(EVar "r", "x"))),
+      EBool true)
+  ) in
+  assert_raises
+    (fun () -> typecheck_prog prog)
+    (TypeError "expression does not have type 'a -> bool")
