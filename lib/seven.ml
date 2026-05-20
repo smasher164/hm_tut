@@ -632,14 +632,10 @@ let%test "record" =
   let open Seven() in
   let prog = (
     [{name = "Foo"; ty = [("x", TyBool); ("y", TyArrow(TyBool, TyBool))]}],
-    EApp(EProj(ERecord [("x", EBool true); ("y", ELam("x", EVar "x"))], "y"), EBool true)
+    ELet(("foo", Some {type_params = []; ty = TyName "Foo"},
+          ERecord [("x", EBool true); ("y", ELam("x", EVar "x"))]),
+      EApp(EProj(EVar "foo", "y"), EBool true))
   ) in
-  let x = typecheck_prog prog in
-  Poly.equal (ty_pretty (typ x)) "bool"
-
-let%test "record_anonymous" =
-  let open Seven() in
-  let prog = ([], EProj(ERecord [("y", EBool false)], "y")) in
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool"
 
@@ -647,7 +643,9 @@ let%test "let" =
   let open Seven() in
   let prog = (
     [{name = "A"; ty = [("x", TyBool)]}],
-    ELet(("r", None, ERecord [("x", EBool true)]), EProj(EVar "r", "x"))
+    ELet(("r", Some {type_params = []; ty = TyName "A"},
+          ERecord [("x", EBool true)]),
+      EProj(EVar "r", "x"))
   ) in
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool"
@@ -679,7 +677,9 @@ let%test "let_rec_error" =
     ELetRec(
       [("f", None, ELam("x", EIf(EVar "x", EApp(EVar "g", EVar "x"), EVar "x")));
        ("g", Some {type_params = []; ty = TyArrow(TyBool, TyName "A")},
-        ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"), ERecord [])))],
+        ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"),
+          ELet(("a", Some {type_params = []; ty = TyName "A"}, ERecord []),
+            EVar "a"))))],
       EApp(EVar "f", EBool true))
   ) in
   assert_raises
@@ -688,10 +688,12 @@ let%test "let_rec_error" =
 
 let%test "let_gen" =
   let open Seven() in
-  let prog = ([],
-    ELet(("f", None, ELam("x", EVar "x")),
-      ELet(("_", None, EApp(EVar "f", ERecord [])),
-        EApp(EVar "f", EBool true)))
+  let prog = (
+    [{name = "A"; ty = []}],
+    ELet(("a", Some {type_params = []; ty = TyName "A"}, ERecord []),
+      ELet(("f", None, ELam("x", EVar "x")),
+        ELet(("_", None, EApp(EVar "f", EVar "a")),
+          EApp(EVar "f", EBool true))))
   ) in
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool"
@@ -712,9 +714,10 @@ let%test "let_gen_ann" =
   let open Seven() in
   let prog = (
     [{name = "A"; ty = []}],
-    ELet(("f", Some {type_params = [("'a", NoRow)]; ty = TyArrow(TyName "'a", TyBool)},
-      ELam("x", EBool true)),
-      EApp(EVar "f", ERecord []))
+    ELet(("a", Some {type_params = []; ty = TyName "A"}, ERecord []),
+      ELet(("f", Some {type_params = [("'a", NoRow)]; ty = TyArrow(TyName "'a", TyBool)},
+        ELam("x", EBool true)),
+        EApp(EVar "f", EVar "a")))
   ) in
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool"
@@ -741,17 +744,23 @@ let%test "let_gen_scope_error" =
     (UnificationFailure "failed to unify type bool with bool -> ?2")
 
 (* Row-polymorphic generalization: `let f r = r.x` should give f a forall
-  with an open-row constraint on its parameter type. Applied to two
-  different record types in sequence, each use freshly instantiates. *)
+  with an open-row constraint on its parameter type. We exercise that by
+  applying f to two records of *different* nominal tycons in sequence,
+  each with its own `x` field type — f instantiates freshly per use. *)
 let%test "let_gen_row" =
   let open Seven() in
-  let prog = ([],
+  let prog = (
+    [{name = "Foo"; ty = [("x", TyBool)]};
+     {name = "Bar"; ty = [("x", TyArrow(TyBool, TyBool))]}],
     ELet(("f", None, ELam("r", EProj(EVar "r", "x"))),
-      ELet(("_", None, EApp(EVar "f", ERecord [("x", EBool true)])),
-        EApp(EVar "f", ERecord [("x", EBool false); ("y", EBool true)])))
+      ELet(("r1", Some {type_params = []; ty = TyName "Foo"}, ERecord [("x", EBool true)]),
+        ELet(("r2", Some {type_params = []; ty = TyName "Bar"},
+              ERecord [("x", ELam("y", EVar "y"))]),
+          ELet(("_", None, EApp(EVar "f", EVar "r1")),
+            EApp(EVar "f", EVar "r2")))))
   ) in
   let x = typecheck_prog prog in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool -> bool"
 
 (* TypeVarBind for let: a nested annotation mentioning 'a from an outer
   annotated let resolves to the outer let's tvar. *)

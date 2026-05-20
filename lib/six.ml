@@ -533,23 +533,10 @@ let%test "record" =
   let open Six() in
   let prog = (
     [{name = "Foo"; ty = [("x", TyBool); ("y", TyArrow(TyBool, TyBool))]}],
-    EApp(EProj(ERecord [("x", EBool true); ("y", ELam("x", EVar "x"))], "y"), EBool true)
+    ELet(("foo", Some {type_params = []; ty = TyName "Foo"},
+          ERecord [("x", EBool true); ("y", ELam("x", EVar "x"))]),
+      EApp(EProj(EVar "foo", "y"), EBool true))
   ) in
-  let x = typecheck_prog prog in
-  Poly.equal (ty_pretty (typ x)) "bool"
-
-let%test "record_anonymous" =
-  let open Six() in
-  let prog = ([], EProj(ERecord [("y", EBool false)], "y")) in
-  let x = typecheck_prog prog in
-  Poly.equal (ty_pretty (typ x)) "bool"
-
-let%test "row_immediate_use" =
-  (* `(fun r -> r.x) {x = true}` — the row constraint on r is resolved
-    before any let-generalization happens, so this works regardless of
-    whether we generalize rows. *)
-  let open Six() in
-  let prog = ([], EApp(ELam("r", EProj(EVar "r", "x")), ERecord [("x", EBool true)])) in
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool"
 
@@ -557,7 +544,9 @@ let%test "let" =
   let open Six() in
   let prog = (
     [{name = "A"; ty = [("x", TyBool)]}],
-    ELet(("r", None, ERecord [("x", EBool true)]), EProj(EVar "r", "x"))
+    ELet(("r", Some {type_params = []; ty = TyName "A"},
+          ERecord [("x", EBool true)]),
+      EProj(EVar "r", "x"))
   ) in
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool"
@@ -589,7 +578,9 @@ let%test "let_rec_error" =
     ELetRec(
       [("f", None, ELam("x", EIf(EVar "x", EApp(EVar "g", EVar "x"), EVar "x")));
        ("g", Some {type_params = []; ty = TyArrow(TyBool, TyName "A")},
-        ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"), ERecord [])))],
+        ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"),
+          ELet(("a", Some {type_params = []; ty = TyName "A"}, ERecord []),
+            EVar "a"))))],
       EApp(EVar "f", EBool true))
   ) in
   assert_raises
@@ -598,10 +589,12 @@ let%test "let_rec_error" =
 
 let%test "let_gen" =
   let open Six() in
-  let prog = ([],
-    ELet(("f", None, ELam("x", EVar "x")),
-      ELet(("_", None, EApp(EVar "f", ERecord [])),
-        EApp(EVar "f", EBool true)))
+  let prog = (
+    [{name = "A"; ty = []}],
+    ELet(("a", Some {type_params = []; ty = TyName "A"}, ERecord []),
+      ELet(("f", None, ELam("x", EVar "x")),
+        ELet(("_", None, EApp(EVar "f", EVar "a")),
+          EApp(EVar "f", EBool true))))
   ) in
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool"
@@ -622,9 +615,10 @@ let%test "let_gen_ann" =
   let open Six() in
   let prog = (
     [{name = "A"; ty = []}],
-    ELet(("f", Some {type_params = ["'a"]; ty = TyArrow(TyName "'a", TyBool)},
-      ELam("x", EBool true)),
-      EApp(EVar "f", ERecord []))
+    ELet(("a", Some {type_params = []; ty = TyName "A"}, ERecord []),
+      ELet(("f", Some {type_params = ["'a"]; ty = TyArrow(TyName "'a", TyBool)},
+        ELam("x", EBool true)),
+        EApp(EVar "f", EVar "a")))
   ) in
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool"
@@ -711,18 +705,24 @@ let%test "let_rec_rigid_error" =
 
 (* The defining limit: row constraints don't flow through let-generalization.
   `let f = fun r -> r.x` leaves r's row-constrained tvar in the body
-  un-generalized, so the first use specializes r's shape and a second
-  use with a different shape conflicts. *)
+  un-generalized, so the first use pins f's parameter to one tycon, and
+  a second use against a different tycon then fails. *)
 let%test "let_gen_row_monomorphism" =
   let open Six() in
-  let prog = ([],
+  let prog = (
+    [{name = "Foo"; ty = [("x", TyBool)]};
+     {name = "Bar"; ty = [("x", TyBool); ("y", TyBool)]}],
     ELet(("f", None, ELam("r", EProj(EVar "r", "x"))),
-      ELet(("_", None, EApp(EVar "f", ERecord [("x", EBool true)])),
-        EApp(EVar "f", ERecord [("x", EBool false); ("y", EBool true)])))
+      ELet(("r1", Some {type_params = []; ty = TyName "Foo"},
+            ERecord [("x", EBool true)]),
+        ELet(("r2", Some {type_params = []; ty = TyName "Bar"},
+              ERecord [("x", EBool true); ("y", EBool true)]),
+          ELet(("_", None, EApp(EVar "f", EVar "r1")),
+            EApp(EVar "f", EVar "r2")))))
   ) in
   assert_raises
     (fun () -> typecheck_prog prog)
-    (RowMismatch "ClosedRow{x: bool} and ClosedRow{x: bool, y: bool}")
+    (UnificationFailure "failed to unify type Foo with Bar")
 
 (* A row-polymorphic function can't be annotated either: the rigid `'a`
   has no row, and a row-constrained tvar can't link to a rigid. This is
