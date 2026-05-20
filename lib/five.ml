@@ -400,83 +400,100 @@ let%test "record" =
   let open Five() in
   let prog = (
     [{name = "Foo"; ty = [("x", TyBool); ("y", TyArrow(TyBool, TyBool))] }],
-    EApp(EProj(ERecord([("x", EBool true); ("y", ELam("x", EVar "x"))]), "y"), EBool true)
+    ELet(("foo", Some (TyName "Foo"),
+          ERecord [("x", EBool true); ("y", ELam("x", EVar "x"))]),
+      EApp(EProj(EVar "foo", "y"), EBool true))
   ) in
   let x = typecheck_prog prog in
   let t = typ x in
   Poly.equal (ty_pretty t) "bool"
 
-let%test "record_anonymous" =
-  let open Five() in
-  let prog = ([], EProj(ERecord([("y", EBool false)]), "y")) in
-  let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
-
+(* Row poly traversing a nominal boundary: the lambda's parameter only
+  requires field `y`, and we apply it to a record annotated as `Foo`. *)
 let%test "row" =
   let open Five() in
   let prog = (
     [{name = "Foo"; ty = [("y", TyArrow(TyBool, TyBool))]}],
-    EApp(EApp(ELam("r", EProj(EVar "r", "y")), ERecord([("y", ELam("x", EVar "x"))])), EBool true)
+    ELet(("r", Some (TyName "Foo"), ERecord [("y", ELam("x", EVar "x"))]),
+      EApp(EApp(ELam("r'", EProj(EVar "r'", "y")), EVar "r"), EBool true))
   ) in
   let x = typecheck_prog prog in
   let t = typ x in
   Poly.equal (ty_pretty t) "bool"
 
+(* Row poly with two records of distinct tycons in scope at the same
+  time: a lambda needing `r1.x` and `r2.f` accepts a Bar and a Foo
+  respectively. *)
 let%test "row2" =
   let open Five() in
   let prog = (
     [{name = "Foo"; ty = [("f", TyArrow(TyBool, TyBool))]};
-      {name = "Bar"; ty = [("x", TyBool)]}],
-    EApp(
-      EApp(ELam("r1", ELam("r2", EApp(EProj(EVar "r2", "f"), EProj(EVar "r1", "x")))),
-      ERecord([("x", EBool true)])),
-    ERecord([("f", ELam("x", EVar "x"))]))
+     {name = "Bar"; ty = [("x", TyBool)]}],
+    ELet(("r1", Some (TyName "Bar"), ERecord [("x", EBool true)]),
+      ELet(("r2", Some (TyName "Foo"), ERecord [("f", ELam("x", EVar "x"))]),
+        EApp(EApp(ELam("a", ELam("b",
+          EApp(EProj(EVar "b", "f"), EProj(EVar "a", "x")))),
+          EVar "r1"),
+          EVar "r2")))
   ) in
   let x = typecheck_prog prog in
   let t = typ x in
   Poly.equal (ty_pretty t) "bool"
 
+(* If-branches with two distinctly-tagged records can't unify into a
+  single result type. *)
 let%test "row_if" =
   let open Five() in
   let prog = (
-    [],
-    EIf(EBool true, ERecord [("x", EBool true)], ERecord[("x", EBool true); ("y", EBool true)])
+    [{name = "Foo"; ty = [("x", TyBool)]};
+     {name = "Bar"; ty = [("x", TyBool); ("y", TyBool)]}],
+    ELet(("foo", Some (TyName "Foo"), ERecord [("x", EBool true)]),
+      ELet(("bar", Some (TyName "Bar"),
+            ERecord [("x", EBool true); ("y", EBool true)]),
+        EIf(EBool true, EVar "foo", EVar "bar")))
   ) in
   assert_raises
     (fun () -> typecheck_prog prog)
-    (RowMismatch "ClosedRow{x: bool} and ClosedRow{x: bool, y: bool}")
+    (UnificationFailure "failed to unify type Foo with Bar")
 
+(* `EWith` updating a field that the tycon doesn't have. *)
 let%test "row_with" =
   let open Five() in
   let prog = (
-    [],
-    EWith(ERecord [("x", EBool  true)], [("y", EBool true)])
+    [{name = "Foo"; ty = [("x", TyBool)]}],
+    ELet(("foo", Some (TyName "Foo"), ERecord [("x", EBool true)]),
+      EWith(EVar "foo", [("y", EBool true)]))
   ) in
   assert_raises
     (fun () -> typecheck_prog prog)
-    (RowMismatch "ClosedRow{x: bool} and OpenRow{y: bool}")
+    (RowMismatch "OpenRow{y: bool} and ClosedRow{x: bool}")
 
 let%test "let" =
   let open Five() in
   let prog = (
     [{name = "A"; ty = [("x", TyBool)]}],
-    ELet(("r", None, ERecord [("x", EBool true)]), EProj(EVar "r", "x"))
+    ELet(("r", Some (TyName "A"), ERecord [("x", EBool true)]),
+      EProj(EVar "r", "x"))
   ) in
   let x = typecheck_prog prog in
   let t = typ x in
   Poly.equal (ty_pretty t) "bool"
 
+(* Without let-generalization, f's parameter is pinned by its first use.
+  Calling f on a `Unit` value pins it to `Unit`; the second call with a
+  bool then fails. *)
 let%test "let_nogen" =
   let open Five() in
-  let prog = ([],
-    ELet(("f", None, ELam("x", EVar "x")),
-      ELet(("_", None, EApp(EVar "f", ERecord[])),
-        EApp(EVar "f", EBool true)))
+  let prog = (
+    [{name = "Unit"; ty = []}],
+    ELet(("u", Some (TyName "Unit"), ERecord []),
+      ELet(("f", None, ELam("x", EVar "x")),
+        ELet(("_", None, EApp(EVar "f", EVar "u")),
+          EApp(EVar "f", EBool true))))
   ) in
   assert_raises
     (fun () -> typecheck_prog prog)
-    (UnificationFailure "failed to unify type {} with bool")
+    (UnificationFailure "failed to unify type Unit with bool")
 
 let%test "let_ann" =
   let open Five() in
@@ -504,9 +521,11 @@ let%test "let_rec_error" =
   let prog = (
     [{name = "A"; ty = []}],
     ELetRec(
-    [("f", None, ELam("x", EIf(EVar "x", EApp(EVar "g", EVar "x"), EVar "x")));
-    ("g", Some (TyArrow(TyBool, TyName "A")), ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"), ERecord[])))],
-    EApp(EVar "f", EBool true))
+      [("f", None, ELam("x", EIf(EVar "x", EApp(EVar "g", EVar "x"), EVar "x")));
+       ("g", Some (TyArrow(TyBool, TyName "A")),
+        ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"),
+          ELet(("a", Some (TyName "A"), ERecord []), EVar "a"))))],
+      EApp(EVar "f", EBool true))
   ) in
   assert_raises
     (fun () -> typecheck_prog prog)

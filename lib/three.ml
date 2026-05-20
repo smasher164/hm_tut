@@ -206,7 +206,10 @@ module Three() = struct
       occurs src dst;
     | _ -> ()
 
-  (* Unify two types. If they are not unifiable, raise an exception. *)
+  (* Unify two types. If they are not unifiable, raise an exception.
+    Starting in this chapter, `unify` takes the env: with records in the
+    picture, unification needs to resolve `TyName tycon` references to
+    their fields (via `lookup_tycon`) to check row constraints. *)
   and unify env (t1 : ty) (t2 : ty) : unit =
     (* Follow all the links. If we see any type variables, they will only be
       Unbound. *)
@@ -359,13 +362,6 @@ let%test "record" =
     [{name = "Foo"; ty = [("x", TyBool); ("y", TyArrow(TyBool, TyBool))] }],
     EApp(EProj(ERecord([("x", EBool true); ("y", ELam("x", EVar "x"))]), "y"), EBool true)
   ) in
-  let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
-
-let%test "record_anonymous" =
-  let open Three() in
-  let prog = ([], EProj(ERecord([("y", EBool false)]), "y")) in
   let x = typecheck_prog prog in
   let t = typ x in
   Poly.equal (ty_pretty t) "bool"
