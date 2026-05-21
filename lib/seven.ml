@@ -137,6 +137,10 @@ module Seven() = struct
   exception TypeError of string
   exception Expected of string
   exception RowMismatch of string
+  exception UnboundTypeVar of string
+
+  let unbound_typevar id =
+    UnboundTypeVar (Printf.sprintf "unresolved type variable %s after typechecking" id)
 
   let undefined_error kind name =
     Undefined (Printf.sprintf "%s %s not defined" kind name)
@@ -346,8 +350,11 @@ module Seven() = struct
     let type_params : (id, row_constraint) Hashtbl.t = Hashtbl.create (module String) in
     let rec gen' ty =
       match force ty with
-      | TyVar { contents = Unbound (id, row, scope) } when scope > !current_scope ->
+      | TyVar ({ contents = Unbound (id, row, scope) } as tv) when scope > !current_scope ->
         Hashtbl.set type_params ~key:id ~data:(gen_row row);
+        (* Mutate the tvar to Link to its generalized TyName, so the
+          post-pass walking the AST doesn't flag it as still-unresolved. *)
+        tv := Link (TyName id);
         TyName id
       | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
       | ty -> ty
@@ -587,13 +594,46 @@ module Seven() = struct
       let body = infer env_body body in
       TELetRec (tdecls, body, typ body)
 
+  (* Post-pass: reject any Unbound type variable surviving in the typed AST.
+    Generalized tvars are linked away by `gen`, so what's left as Unbound
+    is either an anonymous record literal that never got linked to a tycon,
+    or an instantiation that wasn't pinned by its surrounding context. *)
+  let check_no_unbound (texp : texp) : unit =
+    let rec ck_ty (ty : ty) : unit =
+      match force ty with
+      | TyVar { contents = Unbound (id, _, _) } -> raise (unbound_typevar id)
+      | TyVar { contents = Link _ } -> failwith "unexpected: Link after force"
+      | TyArrow (from, dst) -> ck_ty from; ck_ty dst
+      | TyBool | TyName _ -> ()
+    in
+    let rec walk (texp : texp) =
+      ck_ty (typ texp);
+      match texp with
+      | TEBool _ | TEVar _ -> ()
+      | TELam (_, body, _) -> walk body
+      | TEApp (fn, arg, _) -> walk fn; walk arg
+      | TEIf (cond, thn, els, _) -> walk cond; walk thn; walk els
+      | TERecord (rec_lit, _) -> List.iter rec_lit ~f:(fun (_, x) -> walk x)
+      | TEWith (rcd, rec_lit, _) ->
+        walk rcd; List.iter rec_lit ~f:(fun (_, x) -> walk x)
+      | TEProj (rcd, _, _) -> walk rcd
+      | TELet ((_, _, rhs), body, _) -> walk rhs; walk body
+      | TELetRec (decls, body, _) ->
+        List.iter decls ~f:(fun (_, _, rhs) -> walk rhs);
+        walk body
+    in
+    walk texp
+
   let typecheck_prog ((tl, exp): prog) : texp =
     let deduped_defs = Hash_set.create (module String) in
     let env = List.map tl ~f:(fun tc ->
       match Hash_set.strict_add deduped_defs tc.name with
       | Ok _ -> (tc.name, TypeBind tc)
       | Error _ -> raise (duplicate_definition tc.name))
-    in infer env exp
+    in
+    let texp = infer env exp in
+    check_no_unbound texp;
+    texp
 end
 
 let assert_raises f e =

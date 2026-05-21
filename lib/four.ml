@@ -112,6 +112,10 @@ module Four() = struct
   exception TypeError of string
   exception Expected of string
   exception RowMismatch of string
+  exception UnboundTypeVar of string
+
+  let unbound_typevar id =
+    UnboundTypeVar (Printf.sprintf "unresolved type variable %s after typechecking" id)
 
   let undefined_error kind name =
       Undefined (Printf.sprintf "%s %s not defined" kind name)
@@ -332,13 +336,44 @@ module Four() = struct
       let body = infer env body in
       TELet ((id, ann, rhs), body, typ body)
   
+  (* Post-pass: reject any Unbound type variable surviving in the typed AST.
+    With ELet annotations available, every record literal can be linked
+    to a tycon; a surviving Unbound tvar means a literal stayed anonymous.
+    Polymorphic functions don't show up here because four.ml has no
+    let-generalization yet. *)
+  let check_no_unbound (texp : texp) : unit =
+    let rec ck_ty (ty : ty) : unit =
+      match force ty with
+      | TyVar { contents = Unbound (id, _) } -> raise (unbound_typevar id)
+      | TyVar { contents = Link _ } -> failwith "unexpected: Link after force"
+      | TyArrow (from, dst) -> ck_ty from; ck_ty dst
+      | TyBool | TyName _ -> ()
+    in
+    let rec walk (texp : texp) =
+      ck_ty (typ texp);
+      match texp with
+      | TEBool _ | TEVar _ -> ()
+      | TELam (_, body, _) -> walk body
+      | TEApp (fn, arg, _) -> walk fn; walk arg
+      | TEIf (cond, thn, els, _) -> walk cond; walk thn; walk els
+      | TERecord (rec_lit, _) -> List.iter rec_lit ~f:(fun (_, x) -> walk x)
+      | TEWith (rcd, rec_lit, _) ->
+        walk rcd; List.iter rec_lit ~f:(fun (_, x) -> walk x)
+      | TEProj (rcd, _, _) -> walk rcd
+      | TELet ((_, _, rhs), body, _) -> walk rhs; walk body
+    in
+    walk texp
+
   let typecheck_prog ((tl,exp): prog) : texp =
     let deduped_defs = Hash_set.create (module String) in
     let env = List.map tl ~f:(fun tc ->
       match Hash_set.strict_add deduped_defs tc.name with
       | Ok _ -> (tc.name, TypeBind tc)
       | Error _ -> raise (duplicate_definition tc.name))
-    in infer env exp
+    in
+    let texp = infer env exp in
+    check_no_unbound texp;
+    texp
 end
 
 let assert_raises f e =

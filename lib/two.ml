@@ -54,6 +54,10 @@ module Two() = struct
   exception Undefined of string
   exception UnificationFailure of string
   exception OccursCheck
+  exception UnboundTypeVar of string
+
+  let unbound_typevar id =
+    UnboundTypeVar (Printf.sprintf "unresolved type variable %s after typechecking" id)
 
   let undefined_error kind name =
       Undefined (Printf.sprintf "%s %s not defined" kind name)
@@ -168,7 +172,31 @@ module Two() = struct
           branch) *)
       TEIf (cond, thn, els, typ thn)
   
-  let typecheck_prog (prog: prog) : texp = infer [] prog
+  (* Post-pass: reject any Unbound type variable surviving in the typed AST.
+    Every embedded type should be concrete by the time inference finishes; a
+    surviving Unbound means the program has a type we couldn't determine. *)
+  let check_no_unbound (texp : texp) : unit =
+    let rec ck_ty (ty : ty) : unit =
+      match force ty with
+      | TyVar { contents = Unbound id } -> raise (unbound_typevar id)
+      | TyVar { contents = Link _ } -> failwith "unexpected: Link after force"
+      | TyArrow (from, dst) -> ck_ty from; ck_ty dst
+      | TyBool -> ()
+    in
+    let rec walk (texp : texp) =
+      ck_ty (typ texp);
+      match texp with
+      | TEBool _ | TEVar _ -> ()
+      | TELam (_, body, _) -> walk body
+      | TEApp (fn, arg, _) -> walk fn; walk arg
+      | TEIf (cond, thn, els, _) -> walk cond; walk thn; walk els
+    in
+    walk texp
+
+  let typecheck_prog (prog: prog) : texp =
+    let texp = infer [] prog in
+    check_no_unbound texp;
+    texp
 end
 
 let assert_raises f e =
