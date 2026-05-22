@@ -1,5 +1,6 @@
 open Base
 open Poly
+open Mini_ml
 
 module One() = struct
   type id = string
@@ -179,6 +180,18 @@ module One() = struct
     let texp = infer [] prog in
     check_no_unbound texp;
     texp
+
+  let convert_prog (ast_prog : Ast.prog) : prog =
+    Ast.map_prog
+      ~on_bool:(fun b -> EBool b)
+      ~on_var:(fun x -> EVar x)
+      ~on_lam:(fun x body -> ELam (x, body))
+      ~on_app:(fun f a -> EApp (f, a))
+      ~on_prog:(fun _ e -> e)
+      ast_prog
+
+  let typecheck_source src =
+    src |> Parser.parse_string |> convert_prog |> typecheck_prog
 end
 
 let assert_raises f e =
@@ -189,13 +202,11 @@ let assert_raises f e =
 
 let%test "basic" =
   let open One() in
-  let prog = EApp(ELam("x", EVar "x"), EBool true) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source "(fun x -> x) true" in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "basic_error" =
   let open One() in
-  let prog = EApp(ELam("f", EApp(EVar "f", EBool true)), EBool true) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source "(fun f -> f true) true")
     (UnificationFailure "failed to unify type bool -> ?1 with bool")
