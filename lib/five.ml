@@ -432,145 +432,119 @@ let assert_raises f e =
 
 let%test "basic" =
   let open Five() in
-  let prog = ([], EApp(ELam("x", EVar "x"), EBool true)) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source "(fun x -> x) true" in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "basic_error" =
   let open Five() in
-  let prog = ([], EApp(ELam("f", EApp(EVar "f", EBool true)), EBool true)) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source "(fun f -> f true) true")
     (UnificationFailure "failed to unify type bool -> ?1 with bool")
 
 let%test "if" =
   let open Five() in
-  let prog = ([], EIf(EBool true, EBool false, EApp(ELam("x", EVar "x"), EBool true))) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source "if true then false else (fun x -> x) true" in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "if_error" =
   let open Five() in
-  let prog = ([], EIf(EBool true, EBool false, ELam("x", EVar "x"))) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source "if true then false else fun x -> x")
     (UnificationFailure "failed to unify type bool with ?0 -> ?0")
 
 let%test "record" =
   let open Five() in
-  let prog = (
-    [{name = "Foo"; ty = [("x", TyBool); ("y", TyArrow(TyBool, TyBool))] }],
-    ELet(("foo", Some (TyName "Foo"),
-          ERecord [("x", EBool true); ("y", ELam("x", EVar "x"))]),
-      EApp(EProj(EVar "foo", "y"), EBool true))
-  ) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source {|
+    type Foo = { x : bool, y : bool -> bool }
+    let foo : Foo = { x = true, y = fun x -> x } in foo.y true
+  |} in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "row" =
   let open Five() in
-  let prog = (
-    [{name = "Foo"; ty = [("y", TyArrow(TyBool, TyBool))]}],
-    ELet(("r", Some (TyName "Foo"), ERecord [("y", ELam("x", EVar "x"))]),
-      EApp(EApp(ELam("r'", EProj(EVar "r'", "y")), EVar "r"), EBool true))
-  ) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source {|
+    type Foo = { y : bool -> bool }
+    let r : Foo = { y = fun x -> x } in (fun s -> s.y) r true
+  |} in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "row2" =
   let open Five() in
-  let prog = (
-    [{name = "Foo"; ty = [("f", TyArrow(TyBool, TyBool))]};
-     {name = "Bar"; ty = [("x", TyBool)]}],
-    ELet(("r1", Some (TyName "Bar"), ERecord [("x", EBool true)]),
-      ELet(("r2", Some (TyName "Foo"), ERecord [("f", ELam("x", EVar "x"))]),
-        EApp(EApp(ELam("a", ELam("b",
-          EApp(EProj(EVar "b", "f"), EProj(EVar "a", "x")))),
-          EVar "r1"),
-          EVar "r2")))
-  ) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source {|
+    type Foo = { f : bool -> bool }
+    type Bar = { x : bool }
+    let r1 : Bar = { x = true } in
+    let r2 : Foo = { f = fun x -> x } in
+    (fun a -> fun b -> b.f a.x) r1 r2
+  |} in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "row_if" =
   let open Five() in
-  let prog = (
-    [{name = "Foo"; ty = [("x", TyBool)]};
-     {name = "Bar"; ty = [("x", TyBool); ("y", TyBool)]}],
-    ELet(("foo", Some (TyName "Foo"), ERecord [("x", EBool true)]),
-      ELet(("bar", Some (TyName "Bar"),
-            ERecord [("x", EBool true); ("y", EBool true)]),
-        EIf(EBool true, EVar "foo", EVar "bar")))
-  ) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source {|
+      type Foo = { x : bool }
+      type Bar = { x : bool, y : bool }
+      let foo : Foo = { x = true } in
+      let bar : Bar = { x = true, y = true } in
+      if true then foo else bar
+    |})
     (UnificationFailure "failed to unify type Foo with Bar")
 
 let%test "row_with" =
   let open Five() in
-  let prog = (
-    [{name = "Foo"; ty = [("x", TyBool)]}],
-    ELet(("foo", Some (TyName "Foo"), ERecord [("x", EBool true)]),
-      EWith(EVar "foo", [("y", EBool true)]))
-  ) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source {|
+      type Foo = { x : bool }
+      let foo : Foo = { x = true } in { foo with y = true }
+    |})
     (RowMismatch "{y: bool, ...} and {x: bool}")
 
 let%test "let" =
   let open Five() in
-  let prog = (
-    [{name = "A"; ty = [("x", TyBool)]}],
-    ELet(("r", Some (TyName "A"), ERecord [("x", EBool true)]),
-      EProj(EVar "r", "x"))
-  ) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source {|
+    type A = { x : bool }
+    let r : A = { x = true } in r.x
+  |} in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "let_nogen" =
   let open Five() in
-  let prog = (
-    [{name = "Unit"; ty = []}],
-    ELet(("u", Some (TyName "Unit"), ERecord []),
-      ELet(("f", None, ELam("x", EVar "x")),
-        ELet(("_", None, EApp(EVar "f", EVar "u")),
-          EApp(EVar "f", EBool true))))
-  ) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source {|
+      type Unit = {}
+      let u : Unit = {} in
+      let f = fun x -> x in
+      let _ = f u in
+      f true
+    |})
     (UnificationFailure "failed to unify type Unit with bool")
 
 let%test "let_ann" =
   let open Five() in
-  let prog = (
-    [{name = "A"; ty = []}],
-    ELet(("x", Some(TyName "A"), EBool true), EVar "x")
-  ) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source {|
+      type A = {}
+      let x : A = true in x
+    |})
     (TypeError "expression does not have type A")
 
 let%test "let_rec" =
   let open Five() in
-  let prog = ([], ELetRec(
-    [("f", None, ELam("x", EIf(EVar "x", EApp(EVar "g", EVar "x"), EVar "x")));
-    ("g", None, ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"), EVar "x")))],
-    EApp(EVar "f", EBool true)
-  )) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source {|
+    let rec f = fun x -> if x then g x else x
+    and g = fun x -> if x then f x else x in
+    f true
+  |} in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "let_rec_error" =
   let open Five() in
-  let prog = (
-    [{name = "A"; ty = []}],
-    ELetRec(
-      [("f", None, ELam("x", EIf(EVar "x", EApp(EVar "g", EVar "x"), EVar "x")));
-       ("g", Some (TyArrow(TyBool, TyName "A")),
-        ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"),
-          ELet(("a", Some (TyName "A"), ERecord []), EVar "a"))))],
-      EApp(EVar "f", EBool true))
-  ) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source {|
+      type A = {}
+      let rec f = fun x -> if x then g x else x
+      and g : bool -> A = fun x -> if x then f x else let a : A = {} in a in
+      f true
+    |})
     (UnificationFailure "failed to unify type A with bool")
