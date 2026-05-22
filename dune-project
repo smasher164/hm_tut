@@ -1,26 +1,15 @@
-(lang dune 3.14)
-
-(name hm_tut)
-
-(generate_opam_files true)
-
-(source
- (github username/reponame))
-
-(authors "Author Name")
-
-(maintainers "Maintainer Name")
-
-(license LICENSE)
-
-(documentation https://url/to/documentation)
+(lang dune 3.20)
 
 (package
  (name hm_tut)
- (synopsis "A short synopsis")
- (description "A longer description")
- (depends ocaml dune base)
- (tags
-  (topics "to describe" your project)))
+ (depends
+  ocaml
+  dune
+  base
+  stdio
+  ppx_inline_test
+  mini_ml_parser))
 
-; See the complete stanza docs at https://dune.readthedocs.io/en/stable/dune-files.html#dune-project
+(pin
+ (url "git+https://github.com/smasher164/mini-ml-parser.git")
+ (package (name mini_ml_parser)))

@@ -1,6 +1,6 @@
 (library
  (inline_tests)
- (libraries base stdio)
+ (libraries base stdio mini_ml_parser)
  (preprocess
   (pps ppx_inline_test))
  (public_name hm_tut))
