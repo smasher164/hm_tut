@@ -574,217 +574,164 @@ let assert_raises f e =
 
 let%test "basic" =
   let open Seven() in
-  let prog = ([], EApp(ELam("x", EVar "x"), EBool true)) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source "(fun x -> x) true" in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "basic_error" =
   let open Seven() in
-  let prog = ([], EApp(ELam("f", EApp(EVar "f", EBool true)), EBool true)) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source "(fun f -> f true) true")
     (UnificationFailure "failed to unify type bool -> ?1 with bool")
 
 let%test "if" =
   let open Seven() in
-  let prog = ([], EIf(EBool true, EBool false, EApp(ELam("x", EVar "x"), EBool true))) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source "if true then false else (fun x -> x) true" in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "if_error" =
   let open Seven() in
-  let prog = ([], EIf(EBool true, EBool false, ELam("x", EVar "x"))) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source "if true then false else fun x -> x")
     (UnificationFailure "failed to unify type bool with ?0 -> ?0")
 
 let%test "record" =
   let open Seven() in
-  let prog = (
-    [{name = "Foo"; ty = [("x", TyBool); ("y", TyArrow(TyBool, TyBool))]}],
-    ELet(("foo", Some {type_params = []; ty = TyName "Foo"},
-          ERecord [("x", EBool true); ("y", ELam("x", EVar "x"))]),
-      EApp(EProj(EVar "foo", "y"), EBool true))
-  ) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source {|
+    type Foo = { x : bool, y : bool -> bool }
+    let foo : Foo = { x = true, y = fun x -> x } in foo.y true
+  |} in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "let" =
   let open Seven() in
-  let prog = (
-    [{name = "A"; ty = [("x", TyBool)]}],
-    ELet(("r", Some {type_params = []; ty = TyName "A"},
-          ERecord [("x", EBool true)]),
-      EProj(EVar "r", "x"))
-  ) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source {|
+    type A = { x : bool }
+    let r : A = { x = true } in r.x
+  |} in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "let_ann" =
   let open Seven() in
-  let prog = (
-    [{name = "A"; ty = []}],
-    ELet(("x", Some { type_params = []; ty = TyName "A" }, EBool true), EVar "x")
-  ) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source {|
+      type A = {}
+      let x : A = true in x
+    |})
     (TypeError "expression does not have type A")
 
 let%test "let_rec" =
   let open Seven() in
-  let prog = ([], ELetRec(
-    [("f", None, ELam("x", EIf(EVar "x", EApp(EVar "g", EVar "x"), EVar "x")));
-     ("g", None, ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"), EVar "x")))],
-    EApp(EVar "f", EBool true)
-  )) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source {|
+    let rec f = fun x -> if x then g x else x
+    and g = fun x -> if x then f x else x in
+    f true
+  |} in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "let_rec_error" =
   let open Seven() in
-  let prog = (
-    [{name = "A"; ty = []}],
-    ELetRec(
-      [("f", None, ELam("x", EIf(EVar "x", EApp(EVar "g", EVar "x"), EVar "x")));
-       ("g", Some {type_params = []; ty = TyArrow(TyBool, TyName "A")},
-        ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"),
-          ELet(("a", Some {type_params = []; ty = TyName "A"}, ERecord []),
-            EVar "a"))))],
-      EApp(EVar "f", EBool true))
-  ) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source {|
+      type A = {}
+      let rec f = fun x -> if x then g x else x
+      and g : bool -> A = fun x -> if x then f x else let a : A = {} in a in
+      f true
+    |})
     (UnificationFailure "failed to unify type A with bool")
 
 let%test "let_gen" =
   let open Seven() in
-  let prog = (
-    [{name = "A"; ty = []}],
-    ELet(("a", Some {type_params = []; ty = TyName "A"}, ERecord []),
-      ELet(("f", None, ELam("x", EVar "x")),
-        ELet(("_", None, EApp(EVar "f", EVar "a")),
-          EApp(EVar "f", EBool true))))
-  ) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source {|
+    type A = {}
+    let a : A = {} in
+    let f = fun x -> x in
+    let _ = f a in
+    f true
+  |} in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "fix" =
   let open Seven() in
-  let prog = ([],
-    ELetRec([("fix", None,
-      ELam("f", ELam("x", EApp(EApp(EVar "f", EApp(EVar "fix", EVar "f")), EVar "x"))))],
-      EApp(EVar "fix",
-        ELam("f", ELam("arg",
-          EIf(EVar "arg", EApp(EVar "f", EBool false), EBool true)))))
-  ) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source {|
+    let rec fix = fun f -> fun x -> f (fix f) x in
+    fix (fun f -> fun arg -> if arg then f false else true)
+  |} in
   Poly.equal (ty_pretty (typ x)) "bool -> bool"
 
 let%test "let_gen_ann" =
   let open Seven() in
-  let prog = (
-    [{name = "A"; ty = []}],
-    ELet(("a", Some {type_params = []; ty = TyName "A"}, ERecord []),
-      ELet(("f", Some {type_params = [("'a", NoRow)]; ty = TyArrow(TyName "'a", TyBool)},
-        ELam("x", EBool true)),
-        EApp(EVar "f", EVar "a")))
-  ) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source {|
+    type A = {}
+    let a : A = {} in
+    let f : forall 'a. 'a -> bool = fun x -> true in
+    f a
+  |} in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "let_gen_error" =
   let open Seven() in
-  let prog = (
-    [{name = "A"; ty = []}],
-    ELet(("f", Some {type_params = [("'a", NoRow)]; ty = TyArrow(TyName "'a", TyName "A")},
-      ELam("x", EBool true)),
-      EApp(EVar "f", EBool true))
-  ) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source {|
+      type A = {}
+      let f : forall 'a. 'a -> A = fun x -> true in
+      f true
+    |})
     (TypeError "expression does not have type 'a -> A")
 
 let%test "let_gen_scope_error" =
   let open Seven() in
-  let prog = ([],
-    EApp(EApp(ELam("x", ELet(("y", None, EVar "x"), EVar "y")), EBool true), EBool true)
-  ) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source
+      "(fun x -> let y = x in y) true true")
     (UnificationFailure "failed to unify type bool with bool -> ?2")
 
 let%test "let_gen_row" =
   let open Seven() in
-  let prog = (
-    [{name = "Foo"; ty = [("x", TyBool)]};
-     {name = "Bar"; ty = [("x", TyArrow(TyBool, TyBool))]}],
-    ELet(("f", None, ELam("r", EProj(EVar "r", "x"))),
-      ELet(("r1", Some {type_params = []; ty = TyName "Foo"}, ERecord [("x", EBool true)]),
-        ELet(("r2", Some {type_params = []; ty = TyName "Bar"},
-              ERecord [("x", ELam("y", EVar "y"))]),
-          ELet(("_", None, EApp(EVar "f", EVar "r1")),
-            EApp(EVar "f", EVar "r2")))))
-  ) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source {|
+    type Foo = { x : bool }
+    type Bar = { x : bool -> bool }
+    let f = fun r -> r.x in
+    let r1 : Foo = { x = true } in
+    let r2 : Bar = { x = fun y -> y } in
+    let _ = f r1 in
+    f r2
+  |} in
   Poly.equal (ty_pretty (typ x)) "bool -> bool"
 
 let%test "let_typevar_ref" =
   let open Seven() in
-  let prog = ([],
-    ELet(("f",
-      Some {type_params = [("'a", NoRow)]; ty = TyArrow(TyName "'a", TyName "'a")},
-      ELam("x", ELet(("y", Some {type_params = []; ty = TyName "'a"}, EVar "x"), EVar "y"))),
-      EApp(EVar "f", EBool true))
-  ) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source {|
+    let f : forall 'a. 'a -> 'a = fun x -> let y : 'a = x in y in
+    f true
+  |} in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "let_rec_typevar_ref" =
   let open Seven() in
-  let prog = ([],
-    ELetRec(
-      [("f",
-        Some {type_params = [("'a", NoRow)]; ty = TyArrow(TyName "'a", TyName "'a")},
-        ELam("x", ELet(("y", Some {type_params = []; ty = TyName "'a"}, EVar "x"), EVar "y")))],
-      EApp(EVar "f", EBool true))
-  ) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source {|
+    let rec f : forall 'a. 'a -> 'a = fun x -> let y : 'a = x in y in
+    f true
+  |} in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "let_rigid_ok" =
   let open Seven() in
-  let prog = ([],
-    ELet(("f",
-      Some {type_params = [("'a", NoRow)]; ty = TyArrow(TyName "'a", TyName "'a")},
-      ELam("x", EVar "x")),
-      EApp(EVar "f", EBool true))
-  ) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source {|
+    let f : forall 'a. 'a -> 'a = fun x -> x in
+    f true
+  |} in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "let_rigid_error" =
   let open Seven() in
-  let prog = ([],
-    ELet(("f",
-      Some {type_params = [("'a", NoRow); ("'b", NoRow)];
-            ty = TyArrow(TyName "'a", TyName "'b")},
-      ELam("x", EVar "x")),
-      EVar "f")
-  ) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source
+      "let f : forall 'a 'b. 'a -> 'b = fun x -> x in f")
     (TypeError "expression does not have type 'a -> 'b")
 
 let%test "let_rec_rigid_error" =
   let open Seven() in
-  let prog = ([],
-    ELetRec(
-      [("f",
-        Some {type_params = [("'a", NoRow); ("'b", NoRow)];
-              ty = TyArrow(TyName "'a", TyName "'b")},
-        ELam("x", EVar "x"))],
-      EVar "f")
-  ) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source
+      "let rec f : forall 'a 'b. 'a -> 'b = fun x -> x in f")
     (TypeError "expression does not have type 'a -> 'b")

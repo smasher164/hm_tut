@@ -248,55 +248,41 @@ let assert_raises f e =
 
 let%test "basic" =
   let open Three() in
-  let prog = EApp(ELam("x", EVar "x"), EBool true) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source "(fun x -> x) true" in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "basic_error" =
   let open Three() in
-  let prog = EApp(ELam("f", EApp(EVar "f", EBool true)), EBool true) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source "(fun f -> f true) true")
     (UnificationFailure "failed to unify type bool -> ?1 with bool")
 
 let%test "if" =
   let open Three() in
-  let prog = EIf(EBool true, EBool false, EApp(ELam("x", EVar "x"), EBool true)) in
-  let x = typecheck_prog prog in
+  let x = typecheck_source "if true then false else (fun x -> x) true" in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "if_error" =
   let open Three() in
-  let prog = EIf(EBool true, EBool false, ELam("x", EVar "x")) in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source "if true then false else fun x -> x")
     (UnificationFailure "failed to unify type bool with ?0 -> ?0")
 
 (* A let binding gives a name to a value, then uses it inside a body. *)
 let%test "let" =
   let open Three() in
-  let prog =
-    ELet(("x", None, EBool true), EIf(EVar "x", EBool false, EBool true))
-  in
-  let x = typecheck_prog prog in
+  let x = typecheck_source "let x = true in if x then false else true" in
   Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "let_ann" =
   let open Three() in
-  let prog =
-    ELet(("x", Some TyBool, ELam("y", EVar "y")), EVar "x")
-  in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source "let x : bool = fun y -> y in x")
     (TypeError "expression does not have type bool")
 
 let%test "let_nogen" =
   let open Three() in
-  let prog =
-    ELet(("f", None, ELam("x", EVar "x")),
-      ELet(("_", None, EApp(EVar "f", EBool true)),
-        EApp(EVar "f", ELam("y", EVar "y"))))
-  in
   assert_raises
-    (fun () -> typecheck_prog prog)
+    (fun () -> typecheck_source
+      "let f = fun x -> x in let _ = f true in f (fun y -> y)")
     (UnificationFailure "failed to unify type bool with ?2 -> ?2")
