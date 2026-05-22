@@ -3,47 +3,56 @@ open Poly
 
 module Nine() = struct
   type id = string
+  (* The scope is an integer counter that holds the depth of the current
+    let binding. Every unbound type variable contains the scope at which
+    it was created. *)
   type scope = int
   type ty =
-    | TyBool
-    | TyArrow of ty * ty
-    | TyVar of tv ref
-    | TyName of id
-    | TyApp of ty list
+    | TyBool (* Bool *)
+    | TyArrow of ty * ty (* Function type: T1 -> T2 *)
+    | TyVar of tv ref (* Type variable: held behind a mutable reference. *)
+    | TyName of id (* Type name: a tycon (with no args) or a rigid type variable. *)
+    | TyApp of ty list (* Type application: head :: args, e.g. TyApp[TyName "box"; TyBool] *)
   and record_ty = (id * ty) list
+  (* A row constraint sits on an unbound type variable. *)
   and row_constraint =
     | NoRow
-    | OpenRow of record_ty
-    | ClosedRow of record_ty
-  and tv =
+    | OpenRow of record_ty (* Must contain at least these fields. *)
+    | ClosedRow of record_ty (* Must contain exactly these fields. *)
+  and tv = (* A type variable *)
     | Unbound of id * row_constraint * scope
     | Link of ty
+  (* Type declaration/constructor with type parameters. All type declarations are nominal records. *)
   type tycon = {
     name : id;
     type_params : id list;
     ty : record_ty;
   }
+  (* A generic type. Should be read as forall p1::r1..pn::rn. ty, where each
+    pi is a type parameter and ri its row constraint (NoRow for plain
+    parameters). It is separated from ty because in HM, a forall can
+  only be at the top level of a type. *)
   type generic_ty = {
     type_params : (id * row_constraint) list;
     ty : ty;
   }
   type bind =
-    | VarBind of generic_ty
-    | TypeBind of tycon
+    | VarBind of generic_ty (* A variable binding maps to a generic type. *)
+    | TypeBind of tycon (* A type binding maps to a type constructor. *)
     | TypeVarBind of row_constraint
       (* A type variable binding marks some rigid type and its corresponding row constraints. *)
   type env = (id * bind) list
   type exp =
-    | EBool of bool
-    | EVar of id
-    | ELam of id * exp
-    | EApp of exp * exp
-    | EIf of exp * exp * exp
-    | ERecord of record_lit
-    | EWith of exp * record_lit
-    | EProj of exp * id
-    | ELet of let_decl * exp
-    | ELetRec of let_decl list * exp
+    | EBool of bool (* true/false *)
+    | EVar of id (* x *)
+    | ELam of id * exp (* fun x -> x *)
+    | EApp of exp * exp (* f arg *)
+    | EIf of exp * exp * exp (* if <exp> then <exp> else <exp> *)
+    | ERecord of record_lit (* {x = true, y = false} *)
+    | EWith of exp * record_lit (* { r with x = true, y = false } *)
+    | EProj of exp * id (* r.y *)
+    | ELet of let_decl * exp (* let x : <type-annotation> = <exp> in <exp> *)
+    | ELetRec of let_decl list * exp (* let rec <decls> in <exp> *)
   and record_lit = (id * exp) list
   and let_decl = id * generic_ty option * exp
   type texp =
@@ -150,6 +159,7 @@ module Nine() = struct
   let row_mismatch row1 row2 =
     RowMismatch (Printf.sprintf "%s and %s" (print_row ty_pretty row1) (print_row ty_pretty row2))
 
+  (* Lookup a variable's type in the environment. *)
   let lookup_var_type name (e : env) : generic_ty =
     match List.Assoc.find e ~equal name with
     | Some (VarBind t) -> t
@@ -160,6 +170,7 @@ module Nine() = struct
     | Some b -> b
     | None -> raise (undefined_error "type" name)
 
+  (* Get the type of a typed expression. *)
   let typ (texp : texp) : ty =
     match texp with
     | TEBool _ -> TyBool
@@ -179,11 +190,15 @@ module Nine() = struct
     | TERecord (rec_lit, _) -> List.for_all rec_lit ~f:(fun (_, fld) -> is_value fld)
     | TEWith _ | TEApp _ | TEIf _ | TEProj _ | TELet _ | TELetRec _ -> false
 
+  (* Global state that stores a counter for generating fresh unbound type variables. *)
   let gensym_counter = ref 0
+  (* Global state that stores the current scope. *)
   let current_scope = ref 1
   let enter_scope () = Int.incr current_scope
   let leave_scope () = Int.decr current_scope
 
+  (* Generate a fresh unbound type variable with a unique name, an optional
+    row constraint, and the current scope. *)
   let fresh_unbound_var ?(row=NoRow) () =
     let n = !gensym_counter in
     Int.incr gensym_counter;
@@ -225,14 +240,14 @@ module Nine() = struct
     | NoRow, row | row, NoRow -> row
     | OpenRow row_a, OpenRow row_b ->
       OpenRow (List.dedup_and_sort (row_a @ row_b) ~compare:(fun (f1,t1) (f2,t2) ->
-        if f1 = f2 then (unify env t1 t2; 0)
+        if String.equal f1 f2 then (unify env t1 t2; 0)
         else Poly.compare (f1,t1) (f2,t2)))
     | OpenRow o_row, ClosedRow c_row | ClosedRow c_row, OpenRow o_row ->
-      List.iter o_row (fun (id,ty) ->
+      List.iter o_row ~f:(fun (id,ty) ->
         if not (fld_exists env c_row id ty) then
           raise (row_mismatch row_a row_b)); ClosedRow c_row
     | ClosedRow flds1, ClosedRow flds2 when Int.equal (List.length flds1) (List.length flds2) ->
-      List.iter flds1 (fun (id,ty) ->
+      List.iter flds1 ~f:(fun (id,ty) ->
         if not (fld_exists env flds2 id ty) then
           raise (row_mismatch row_a row_b)); ClosedRow flds1
     | _ -> raise (row_mismatch row_a row_b)
@@ -240,6 +255,8 @@ module Nine() = struct
   and fld_exists env (rcd: record_ty) id ty =
     List.exists rcd ~f:(fun (f,t) -> String.equal f id && (unify env t ty; true))
 
+  (* Occurs check: check if a type variable occurs in a type. If it does, raise
+    an exception. *)
   and occurs (src : tv ref) (ty : ty) : unit =
     match force ty with
     | TyVar tgt when src == tgt -> raise OccursCheck
@@ -254,6 +271,7 @@ module Nine() = struct
     | TyApp app -> List.iter app ~f:(occurs src)
     | _ -> ()
 
+  (* Check that tv_row's fields are contained within rigid_row. *)
   and check_rigid_subset env tv_row rigid_row =
     match tv_row, rigid_row with
     | NoRow, _ -> ()
@@ -264,6 +282,7 @@ module Nine() = struct
           raise (row_mismatch tv_row rigid_row))
     | _ -> raise (row_mismatch tv_row rigid_row)
 
+  (* Unify two types. If they are not unifiable, raise an exception. *)
   and unify env (t1 : ty) (t2 : ty) : unit =
     let t1, t2 = (force t1, force t2) in
     match (t1, t2) with
@@ -299,6 +318,9 @@ module Nine() = struct
       List.iter2_exn app1 app2 ~f:(unify env)
     | _ -> raise (unify_failed t1 t2)
 
+  (* The environment stores generic types, but sometimes we need to associate
+    a non-generalized type to a variable. This function wraps a type into a
+    trivial generic type (no quantified parameters). *)
   let dont_generalize ty : generic_ty = { type_params = []; ty }
 
   let gen (ty: ty) : generic_ty =
@@ -327,6 +349,9 @@ module Nine() = struct
     in
     { type_params; ty }
 
+  (* Instantiate a generic type by replacing all the type parameters
+   with fresh unbound type variables. Ensure that the same ID gets
+   mapped to the same unbound type variable by using an (id, ty) Hashtbl. *)
   let inst (gty: generic_ty) : ty =
     let tbl = Hashtbl.create (module String) in
     List.iter gty.type_params ~f:(fun (pid, _) ->
@@ -347,6 +372,7 @@ module Nine() = struct
       | OpenRow flds -> OpenRow (List.map flds ~f:(fun (id, ty) -> (id, inst' ty)))
       | ClosedRow flds -> ClosedRow (List.map flds ~f:(fun (id, ty) -> (id, inst' ty)))
     in
+    (* Attach the instantiated row constraint to each fresh type variable in the table. *)
     List.iter gty.type_params ~f:(fun (pid, row) ->
       match row with
       | NoRow -> ()
@@ -356,6 +382,8 @@ module Nine() = struct
         tv := Unbound(id, inst_row row, scope));
     inst' gty.ty
 
+  (* Turn a generic_ty into its rigid form, so that when annotations are instantiated,
+     they don't produce Unbound type variables that can unify with each other.*)
   let as_rigid (gty: generic_ty) : env * ty =
     let extras = List.map gty.type_params ~f:(fun (id, row) -> (id, TypeVarBind row)) in
     (extras, gty.ty)
@@ -374,28 +402,45 @@ module Nine() = struct
 
   and infer (env : env) (exp : exp) : texp =
     match exp with
-    | EBool b -> TEBool (b, TyBool)
+    | EBool b -> TEBool (b, TyBool) (* A true/false value is of type Bool. *)
     | EVar name ->
+      (* Variable is being used. Look up its type in the environment, *)
       let var_ty = lookup_var_type name env in
+      (* instantiate its type by replacing all of its quantified type
+         variables with fresh unbound type variables. *)
       TEVar (name, inst var_ty)
     | ELam (param, body) ->
+      (* Instantiate a fresh type variable for the lambda parameter, and
+          extend the environment with the param and its type. *)
       let ty_param = fresh_unbound_var () in
       let env' = (param, VarBind (dont_generalize ty_param)) :: env in
+      (* Typecheck the body of the lambda with the extended environment. *)
       let body = infer env' body in
+      (* Return a synthesized arrow type from the parameter to the body. *)
       TELam (param, body, TyArrow (ty_param, typ body))
     | EApp (fn, arg) ->
+      (* To typecheck a function application, first infer the types of the
+          function and the argument. *)
       let fn = infer env fn in
       let arg = infer env arg in
+      (* Instantiate a fresh type variable for the result of the application,
+          and synthesize an arrow type going from the argument to the
+          result. *)
       let ty_res = fresh_unbound_var () in
       let ty_arr = TyArrow (typ arg, ty_res) in
+      (* Unify it with the function's type. *)
       unify env (typ fn) ty_arr;
+      (* Return the result type. *)
       TEApp (fn, arg, ty_res)
     | EIf (cond, thn, els) ->
+      (* Check that the type of condition is Bool. *)
       let cond = infer env cond in
       unify env (typ cond) TyBool;
+      (* Check that the types of the branches are equal to each other. *)
       let thn = infer env thn in
       let els = infer env els in
       unify env (typ thn) (typ els);
+      (* Return the type of one of the branches. (we'll pick the "then" branch) *)
       TEIf (cond, thn, els, typ thn)
     | ERecord rec_lit ->
       let rec_lit = List.map rec_lit ~f:(fun (id, x) -> (id, infer env x)) in

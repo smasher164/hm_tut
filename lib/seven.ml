@@ -209,14 +209,14 @@ module Seven() = struct
     | NoRow, row | row, NoRow -> row
     | OpenRow row_a, OpenRow row_b ->
       OpenRow (List.dedup_and_sort (row_a @ row_b) ~compare:(fun (f1,t1) (f2,t2) ->
-        if f1 = f2 then (unify env t1 t2; 0)
+        if String.equal f1 f2 then (unify env t1 t2; 0)
         else Poly.compare (f1,t1) (f2,t2)))
     | OpenRow o_row, ClosedRow c_row | ClosedRow c_row, OpenRow o_row ->
-      List.iter o_row (fun (id,ty) ->
+      List.iter o_row ~f:(fun (id,ty) ->
         if not (fld_exists env c_row id ty) then
           raise (row_mismatch row_a row_b)); ClosedRow c_row
     | ClosedRow flds1, ClosedRow flds2 when Int.equal (List.length flds1) (List.length flds2) ->
-      List.iter flds1 (fun (id,ty) ->
+      List.iter flds1 ~f:(fun (id,ty) ->
         if not (fld_exists env flds2 id ty) then
           raise (row_mismatch row_a row_b)); ClosedRow flds1
     | _ -> raise (row_mismatch row_a row_b)

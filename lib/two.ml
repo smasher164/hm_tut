@@ -98,7 +98,7 @@ module Two() = struct
     (* Follow all the links. If we see a type variable, it will only be
       Unbound. *)
     match force ty with
-    | TyVar tgt when phys_equal src tgt ->
+    | TyVar tgt when src == tgt ->
       (* src type variable occurs in ty. *)
       raise OccursCheck
     | TyArrow(from, dst) ->

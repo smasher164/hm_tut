@@ -37,22 +37,22 @@ module Eight() = struct
     ty : ty;
   }
   type bind =
-    | VarBind of generic_ty
-    | TypeBind of tycon
+    | VarBind of generic_ty (* A variable binding maps to a generic type. *)
+    | TypeBind of tycon (* A type binding maps to a type constructor. *)
     | TypeVarBind of row_constraint
       (* A type variable binding marks some rigid type and its corresponding row constraints. *)
   type env = (id * bind) list
   type exp =
-    | EBool of bool
-    | EVar of id
-    | ELam of id * exp
-    | EApp of exp * exp
-    | EIf of exp * exp * exp
+    | EBool of bool (* true/false *)
+    | EVar of id (* x *)
+    | ELam of id * exp (* fun x -> x *)
+    | EApp of exp * exp (* f arg *)
+    | EIf of exp * exp * exp (* if <exp> then <exp> else <exp> *)
     | ERecord of record_lit (* {x = true, y = false} *)
-    | EWith of exp * record_lit (* { r with x = true } *)
+    | EWith of exp * record_lit (* { r with x = true, y = false } *)
     | EProj of exp * id (* r.y *)
-    | ELet of let_decl * exp
-    | ELetRec of let_decl list * exp
+    | ELet of let_decl * exp (* let x : <type-annotation> = <exp> in <exp> *)
+    | ELetRec of let_decl list * exp (* let rec <decls> in <exp> *)
   and record_lit = (id * exp) list
   and let_decl = id * generic_ty option * exp
   type texp =
@@ -159,6 +159,7 @@ module Eight() = struct
   let row_mismatch row1 row2 =
     RowMismatch (Printf.sprintf "%s and %s" (print_row ty_pretty row1) (print_row ty_pretty row2))
 
+  (* Lookup a variable's type in the environment. *)
   let lookup_var_type name (e : env) : generic_ty =
     match List.Assoc.find e ~equal name with
     | Some (VarBind t) -> t
@@ -169,6 +170,7 @@ module Eight() = struct
     | Some b -> b
     | None -> raise (undefined_error "type" name)
 
+  (* Get the type of a typed expression. *)
   let typ (texp : texp) : ty =
     match texp with
     | TEBool _ -> TyBool
@@ -182,11 +184,15 @@ module Eight() = struct
     | TELet (_, _, ty) -> ty
     | TELetRec (_, _, ty) -> ty
 
+  (* Global state that stores a counter for generating fresh unbound type variables. *)
   let gensym_counter = ref 0
+  (* Global state that stores the current scope. *)
   let current_scope = ref 1
   let enter_scope () = Int.incr current_scope
   let leave_scope () = Int.decr current_scope
 
+  (* Generate a fresh unbound type variable with a unique name, an optional
+    row constraint, and the current scope. *)
   let fresh_unbound_var ?(row=NoRow) () =
     let n = !gensym_counter in
     Int.incr gensym_counter;
@@ -228,14 +234,14 @@ module Eight() = struct
     | NoRow, row | row, NoRow -> row
     | OpenRow row_a, OpenRow row_b ->
       OpenRow (List.dedup_and_sort (row_a @ row_b) ~compare:(fun (f1,t1) (f2,t2) ->
-        if f1 = f2 then (unify env t1 t2; 0)
+        if String.equal f1 f2 then (unify env t1 t2; 0)
         else Poly.compare (f1,t1) (f2,t2)))
     | OpenRow o_row, ClosedRow c_row | ClosedRow c_row, OpenRow o_row ->
-      List.iter o_row (fun (id,ty) ->
+      List.iter o_row ~f:(fun (id,ty) ->
         if not (fld_exists env c_row id ty) then
           raise (row_mismatch row_a row_b)); ClosedRow c_row
     | ClosedRow flds1, ClosedRow flds2 when Int.equal (List.length flds1) (List.length flds2) ->
-      List.iter flds1 (fun (id,ty) ->
+      List.iter flds1 ~f:(fun (id,ty) ->
         if not (fld_exists env flds2 id ty) then
           raise (row_mismatch row_a row_b)); ClosedRow flds1
     | _ -> raise (row_mismatch row_a row_b)
@@ -270,6 +276,7 @@ module Eight() = struct
           raise (row_mismatch tv_row rigid_row))
     | _ -> raise (row_mismatch tv_row rigid_row)
 
+  (* Unify two types. If they are not unifiable, raise an exception. *)
   and unify env (t1 : ty) (t2 : ty) : unit =
     let t1, t2 = (force t1, force t2) in
     match (t1, t2) with
@@ -305,6 +312,9 @@ module Eight() = struct
       List.iter2_exn app1 app2 ~f:(unify env)
     | _ -> raise (unify_failed t1 t2)
 
+  (* The environment stores generic types, but sometimes we need to associate
+    a non-generalized type to a variable. This function wraps a type into a
+    trivial generic type (no quantified parameters). *)
   let dont_generalize ty : generic_ty = { type_params = []; ty }
 
   let gen (ty: ty) : generic_ty =
@@ -366,6 +376,8 @@ module Eight() = struct
         tv := Unbound(id, inst_row row, scope));
     inst' gty.ty
 
+  (* Turn a generic_ty into its rigid form, so that when annotations are instantiated,
+     they don't produce Unbound type variables that can unify with each other.*)
   let as_rigid (gty: generic_ty) : env * ty =
     let extras = List.map gty.type_params ~f:(fun (id, row) -> (id, TypeVarBind row)) in
     (extras, gty.ty)
@@ -380,28 +392,45 @@ module Eight() = struct
 
   and infer (env : env) (exp : exp) : texp =
     match exp with
-    | EBool b -> TEBool (b, TyBool)
+    | EBool b -> TEBool (b, TyBool) (* A true/false value is of type Bool. *)
     | EVar name ->
+      (* Variable is being used. Look up its type in the environment, *)
       let var_ty = lookup_var_type name env in
+      (* instantiate its type by replacing all of its quantified type
+         variables with fresh unbound type variables. *)
       TEVar (name, inst var_ty)
     | ELam (param, body) ->
+      (* Instantiate a fresh type variable for the lambda parameter, and
+          extend the environment with the param and its type. *)
       let ty_param = fresh_unbound_var () in
       let env' = (param, VarBind (dont_generalize ty_param)) :: env in
+      (* Typecheck the body of the lambda with the extended environment. *)
       let body = infer env' body in
+      (* Return a synthesized arrow type from the parameter to the body. *)
       TELam (param, body, TyArrow (ty_param, typ body))
     | EApp (fn, arg) ->
+      (* To typecheck a function application, first infer the types of the
+          function and the argument. *)
       let fn = infer env fn in
       let arg = infer env arg in
+      (* Instantiate a fresh type variable for the result of the application,
+          and synthesize an arrow type going from the argument to the
+          result. *)
       let ty_res = fresh_unbound_var () in
       let ty_arr = TyArrow (typ arg, ty_res) in
+      (* Unify it with the function's type. *)
       unify env (typ fn) ty_arr;
+      (* Return the result type. *)
       TEApp (fn, arg, ty_res)
     | EIf (cond, thn, els) ->
+      (* Check that the type of condition is Bool. *)
       let cond = infer env cond in
       unify env (typ cond) TyBool;
+      (* Check that the types of the branches are equal to each other. *)
       let thn = infer env thn in
       let els = infer env els in
       unify env (typ thn) (typ els);
+      (* Return the type of one of the branches. (we'll pick the "then" branch) *)
       TEIf (cond, thn, els, typ thn)
     | ERecord rec_lit ->
       let rec_lit = List.map rec_lit ~f:(fun (id, x) -> (id, infer env x)) in
