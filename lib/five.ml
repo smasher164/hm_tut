@@ -72,15 +72,21 @@ module Five() = struct
     |> List.map ~f:(fun (id, ty) -> id ^ ": " ^ f ty)
     |> String.concat ~sep:", "
 
+  let print_row f row =
+    match row with
+    | NoRow -> "NoRow"
+    | OpenRow flds -> Printf.sprintf "{%s, ...}" (ty_fields f flds)
+    | ClosedRow flds -> Printf.sprintf "{%s}" (ty_fields f flds)
+
   let rec ty_pretty ty =
     match force ty with
     | TyBool -> "bool"
     | TyVar { contents = Link _ } -> failwith "unexpected: Link"
     | TyVar { contents = Unbound(id, NoRow) } -> id
-    | TyVar { contents = Unbound(id, OpenRow flds) } ->
-      Printf.sprintf "%s{%s}" id (ty_fields ty_pretty flds)
-    | TyVar { contents = Unbound(_, ClosedRow flds) } ->
-      Printf.sprintf "{%s}" (ty_fields ty_pretty flds)
+    | TyVar { contents = Unbound(id, (OpenRow _ as row)) } ->
+      id ^ print_row ty_pretty row
+    | TyVar { contents = Unbound(_, (ClosedRow _ as row)) } ->
+      print_row ty_pretty row
     | TyArrow (from, dst) ->
       ty_pretty from ^ " -> " ^ ty_pretty dst
     | TyName name -> name
@@ -91,19 +97,11 @@ module Five() = struct
     | TyVar { contents = Link ty } ->
         Printf.sprintf "TyVar(Link(%s))" (ty_debug ty)
     | TyVar { contents = Unbound(id, NoRow) } -> Printf.sprintf "TyVar(Unbound %s)" id
-    | TyVar { contents = Unbound(id, OpenRow flds) } ->
-      Printf.sprintf "TyVar(Unbound(%s, OpenRow{%s}))" id (ty_fields ty_debug flds)
-    | TyVar { contents = Unbound(id, ClosedRow flds) } ->
-      Printf.sprintf "TyVar(Unbound(%s, ClosedRow{%s}))" id (ty_fields ty_debug flds)
+    | TyVar { contents = Unbound(id, ((OpenRow _ | ClosedRow _) as row)) } ->
+      Printf.sprintf "TyVar(Unbound(%s, %s))" id (print_row ty_debug row)
     | TyArrow(from, dst) ->
       "(" ^ ty_debug from ^ " -> " ^ ty_debug dst ^ ")"
     | TyName name -> name
-
-  let print_row f row =
-    match row with
-    | NoRow -> "NoRow"
-    | OpenRow flds -> Printf.sprintf "OpenRow{%s}" (ty_fields f flds)
-    | ClosedRow flds -> Printf.sprintf "ClosedRow{%s}" (ty_fields f flds)
 
   exception Undefined of string
   exception DuplicateDefinition of string
@@ -267,7 +265,7 @@ module Five() = struct
     match exp with
     | EBool b -> TEBool (b, TyBool) (* A true/false value is of type Bool. *)
     | EVar name ->
-      (* Variable is being used. Look up its type in the environment, *)
+      (* Variable is being used. Look up its type in the environment. *)
       let var_ty = lookup_var_type name env in
       TEVar (name, var_ty)
     | ELam (param, body) ->
@@ -408,8 +406,7 @@ let%test "basic" =
   let open Five() in
   let prog = ([], EApp(ELam("x", EVar "x"), EBool true)) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "basic_error" =
   let open Five() in
@@ -422,8 +419,7 @@ let%test "if" =
   let open Five() in
   let prog = ([], EIf(EBool true, EBool false, EApp(ELam("x", EVar "x"), EBool true))) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "if_error" =
   let open Five() in
@@ -441,8 +437,7 @@ let%test "record" =
       EApp(EProj(EVar "foo", "y"), EBool true))
   ) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "row" =
   let open Five() in
@@ -452,8 +447,7 @@ let%test "row" =
       EApp(EApp(ELam("r'", EProj(EVar "r'", "y")), EVar "r"), EBool true))
   ) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "row2" =
   let open Five() in
@@ -468,8 +462,7 @@ let%test "row2" =
           EVar "r2")))
   ) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "row_if" =
   let open Five() in
@@ -494,7 +487,7 @@ let%test "row_with" =
   ) in
   assert_raises
     (fun () -> typecheck_prog prog)
-    (RowMismatch "OpenRow{y: bool} and ClosedRow{x: bool}")
+    (RowMismatch "{y: bool, ...} and {x: bool}")
 
 let%test "let" =
   let open Five() in
@@ -504,8 +497,7 @@ let%test "let" =
       EProj(EVar "r", "x"))
   ) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "let_nogen" =
   let open Five() in
@@ -538,8 +530,7 @@ let%test "let_rec" =
     EApp(EVar "f", EBool true)
   )) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "let_rec_error" =
   let open Five() in

@@ -61,19 +61,18 @@ module Three() = struct
   exception TypeError of string
   exception UnboundTypeVar of string
 
+  let unbound_typevar id =
+    UnboundTypeVar (Printf.sprintf "unresolved type variable %s after typechecking" id)
+
   let undefined_error kind name =
-      Undefined (Printf.sprintf "%s %s not defined" kind name)
+    Undefined (Printf.sprintf "%s %s not defined" kind name)
 
   let unify_failed t1 t2 =
     UnificationFailure
-      (Printf.sprintf "failed to unify type %s with %s" (ty_pretty t1)
-          (ty_pretty t2))
+      (Printf.sprintf "failed to unify type %s with %s" (ty_pretty t1) (ty_pretty t2))
 
   let type_error ty =
     TypeError(Printf.sprintf "expression does not have type %s" (ty_pretty ty))
-
-  let unbound_typevar id =
-    UnboundTypeVar (Printf.sprintf "unresolved type variable %s after typechecking" id)
 
   (* Lookup a variable's type in the environment. *)
   let lookup_var_type name (e : env) : ty =

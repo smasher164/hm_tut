@@ -13,8 +13,6 @@ module Seven() = struct
     | TyVar of tv ref (* Type variable: held behind a mutable reference. *)
     | TyName of id (* Type name: Foo *)
   and record_ty = (id * ty) list
-  (* A row constraint sits on an unbound type variable. It records what
-    record-shape the variable must have. *)
   and row_constraint =
     | NoRow (* No row constraint. *)
     | OpenRow of record_ty (* Must contain at least these fields (from EProj/EWith). *)
@@ -50,7 +48,7 @@ module Seven() = struct
     | EApp of exp * exp (* f arg *)
     | EIf of exp * exp * exp (* if <exp> then <exp> else <exp> *)
     | ERecord of record_lit (* {x = true, y = false} *)
-    | EWith of exp * record_lit (* { r with x = true, y = false } *)
+    | EWith of exp * record_lit (* { r with x = true } *)
     | EProj of exp * id (* r.y *)
     | ELet of let_decl * exp (* let x : <type-annotation> = <exp> in <exp> *)
     | ELetRec of let_decl list * exp (* let rec <decls> in <exp> *)
@@ -89,15 +87,21 @@ module Seven() = struct
     |> List.map ~f:(fun (id, ty) -> id ^ ": " ^ f ty)
     |> String.concat ~sep:", "
 
+  let print_row f row =
+    match row with
+    | NoRow -> "NoRow"
+    | OpenRow flds -> Printf.sprintf "{%s, ...}" (ty_fields f flds)
+    | ClosedRow flds -> Printf.sprintf "{%s}" (ty_fields f flds)
+
   let rec ty_pretty ty =
     match force ty with
     | TyBool -> "bool"
     | TyVar { contents = Link _ } -> failwith "unexpected: Link"
     | TyVar { contents = Unbound(id, NoRow, _) } -> id
-    | TyVar { contents = Unbound(id, OpenRow flds, _) } ->
-      Printf.sprintf "%s{%s}" id (ty_fields ty_pretty flds)
-    | TyVar { contents = Unbound(_, ClosedRow flds, _) } ->
-      Printf.sprintf "{%s}" (ty_fields ty_pretty flds)
+    | TyVar { contents = Unbound(id, (OpenRow _ as row), _) } ->
+      id ^ print_row ty_pretty row
+    | TyVar { contents = Unbound(_, (ClosedRow _ as row), _) } ->
+      print_row ty_pretty row
     | TyArrow (from, dst) ->
       ty_pretty from ^ " -> " ^ ty_pretty dst
     | TyName name -> name
@@ -109,20 +113,11 @@ module Seven() = struct
       Printf.sprintf "TyVar(Link(%s))" (ty_debug ty)
     | TyVar { contents = Unbound(id, NoRow, scope) } ->
       Printf.sprintf "TyVar(Unbound(%s,%d))" id scope
-    | TyVar { contents = Unbound(id, OpenRow flds, scope) } ->
-      Printf.sprintf "TyVar(Unbound(%s, OpenRow{%s}, %d))" id (ty_fields ty_debug flds) scope
-    | TyVar { contents = Unbound(id, ClosedRow flds, scope) } ->
-      Printf.sprintf "TyVar(Unbound(%s, ClosedRow{%s}, %d))" id (ty_fields ty_debug flds) scope
+    | TyVar { contents = Unbound(id, ((OpenRow _ | ClosedRow _) as row), scope) } ->
+      Printf.sprintf "TyVar(Unbound(%s, %s, %d))" id (print_row ty_debug row) scope
     | TyArrow(from, dst) ->
       "(" ^ ty_debug from ^ " -> " ^ ty_debug dst ^ ")"
     | TyName name -> name
-
-  let print_row f row =
-    match row with
-    | NoRow -> "NoRow"
-    | OpenRow flds -> Printf.sprintf "OpenRow{%s}" (ty_fields f flds)
-    | ClosedRow flds -> Printf.sprintf "ClosedRow{%s}" (ty_fields f flds)
-
 
   exception Undefined of string
   exception DuplicateDefinition of string
@@ -203,6 +198,12 @@ module Seven() = struct
     match row with
     | NoRow -> ()
     | OpenRow flds | ClosedRow flds -> List.iter flds ~f
+
+  let map_row ~f row =
+    match row with
+    | NoRow -> NoRow
+    | OpenRow flds -> OpenRow (List.map flds ~f:(fun (id, ty) -> (id, f ty)))
+    | ClosedRow flds -> ClosedRow (List.map flds ~f:(fun (id, ty) -> (id, f ty)))
 
   let rec union_rows env (row_a: row_constraint) (row_b: row_constraint) : row_constraint =
     match (row_a, row_b) with
@@ -311,18 +312,13 @@ module Seven() = struct
     let rec gen' ty =
       match force ty with
       | TyVar ({ contents = Unbound (id, row, scope) } as tv) when scope > !current_scope ->
-        Hashtbl.set type_params ~key:id ~data:(gen_row row);
+        Hashtbl.set type_params ~key:id ~data:(map_row ~f:gen' row);
         (* Mutate the tvar to Link to its generalized TyName, so the
           post-pass walking the AST doesn't see it as Unbound. *)
         tv := Link (TyName id);
         TyName id
       | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
       | ty -> ty
-    and gen_row row =
-      match row with
-      | NoRow -> NoRow
-      | OpenRow flds -> OpenRow (List.map flds ~f:(fun (id, ty) -> (id, gen' ty)))
-      | ClosedRow flds -> ClosedRow (List.map flds ~f:(fun (id, ty) -> (id, gen' ty)))
     in
     let ty = gen' ty in
     let type_params =
@@ -347,12 +343,6 @@ module Seven() = struct
       | TyArrow (from, dst) -> TyArrow (inst' from, inst' dst)
       | ty -> ty
     in
-    let inst_row row =
-      match row with
-      | NoRow -> NoRow
-      | OpenRow flds -> OpenRow (List.map flds ~f:(fun (id, ty) -> (id, inst' ty)))
-      | ClosedRow flds -> ClosedRow (List.map flds ~f:(fun (id, ty) -> (id, inst' ty)))
-    in
     (* Attach the instantiated row constraint to each fresh type variable in the table. *)
     List.iter gty.type_params ~f:(fun (pid, row) ->
       match row with
@@ -361,7 +351,7 @@ module Seven() = struct
         match Hashtbl.find_exn tbl pid with
         | TyVar tv ->
           let Unbound(id, _, scope) = !tv in
-          tv := Unbound(id, inst_row row, scope)
+          tv := Unbound(id, map_row ~f:inst' row, scope)
         | _ -> failwith "unreachable: tbl always holds TyVars");
     inst' gty.ty
 
@@ -370,7 +360,6 @@ module Seven() = struct
   let as_rigid (gty: generic_ty) : env * ty =
     let extras = List.map gty.type_params ~f:(fun (id, row) -> (id, TypeVarBind row)) in
     (extras, gty.ty)
-
 
   let rec check env ty exp =
     let texp = infer env exp in
@@ -490,8 +479,8 @@ module Seven() = struct
         (id, VarBind (dont_generalize check_ty)))
       in
       let env_with_decls = env_decls @ env in
-      let tdecls : tlet_decl list = List.map prepared ~f:(fun (id, ann, rhs, tv_env, check_ty) ->
-        let trhs = check (tv_env @ env_with_decls) check_ty rhs in
+      let tdecls : tlet_decl list = List.map prepared ~f:(fun (id, ann, rhs, extras, check_ty) ->
+        let trhs = check (extras @ env_with_decls) check_ty rhs in
         (id, ann, trhs))
       in
       leave_scope();

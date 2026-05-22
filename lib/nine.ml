@@ -14,14 +14,15 @@ module Nine() = struct
     | TyName of id (* Type name: a tycon (with no args) or a rigid type variable. *)
     | TyApp of ty list (* Type application: head :: args, e.g. TyApp[TyName "box"; TyBool] *)
   and record_ty = (id * ty) list
-  (* A row constraint sits on an unbound type variable. *)
   and row_constraint =
-    | NoRow
-    | OpenRow of record_ty (* Must contain at least these fields. *)
-    | ClosedRow of record_ty (* Must contain exactly these fields. *)
+    | NoRow (* No row constraint. *)
+    | OpenRow of record_ty (* Must contain at least these fields (from EProj/EWith). *)
+    | ClosedRow of record_ty (* Must contain exactly these fields (from ERecord). *)
   and tv = (* A type variable *)
     | Unbound of id * row_constraint * scope
-    | Link of ty
+      (* Unbound type variable: Holds the type variable's unique name, any
+        row constraint, and the scope at which it was created. *)
+    | Link of ty (* Link type variable: Holds a reference to a type. *)
   (* Type declaration/constructor with type parameters. All type declarations are nominal records. *)
   type tycon = {
     name : id;
@@ -49,7 +50,7 @@ module Nine() = struct
     | EApp of exp * exp (* f arg *)
     | EIf of exp * exp * exp (* if <exp> then <exp> else <exp> *)
     | ERecord of record_lit (* {x = true, y = false} *)
-    | EWith of exp * record_lit (* { r with x = true, y = false } *)
+    | EWith of exp * record_lit (* { r with x = true } *)
     | EProj of exp * id (* r.y *)
     | ELet of let_decl * exp (* let x : <type-annotation> = <exp> in <exp> *)
     | ELetRec of let_decl list * exp (* let rec <decls> in <exp> *)
@@ -75,6 +76,7 @@ module Nine() = struct
     | TyVar { contents = Link ty } -> force ty
     | ty -> ty
 
+  (* Utility functions for pretty printing. *)
   let ty_kind (ty : ty) =
     match ty with
     | TyBool -> "TyBool"
@@ -88,15 +90,21 @@ module Nine() = struct
     |> List.map ~f:(fun (id, ty) -> id ^ ": " ^ f ty)
     |> String.concat ~sep:", "
 
+  let print_row f row =
+    match row with
+    | NoRow -> "NoRow"
+    | OpenRow flds -> Printf.sprintf "{%s, ...}" (ty_fields f flds)
+    | ClosedRow flds -> Printf.sprintf "{%s}" (ty_fields f flds)
+
   let rec ty_pretty ty =
     match force ty with
     | TyBool -> "bool"
     | TyVar { contents = Link _ } -> failwith "unexpected: Link"
     | TyVar { contents = Unbound(id, NoRow, _) } -> id
-    | TyVar { contents = Unbound(id, OpenRow flds, _) } ->
-      Printf.sprintf "%s{%s}" id (ty_fields ty_pretty flds)
-    | TyVar { contents = Unbound(_, ClosedRow flds, _) } ->
-      Printf.sprintf "{%s}" (ty_fields ty_pretty flds)
+    | TyVar { contents = Unbound(id, (OpenRow _ as row), _) } ->
+      id ^ print_row ty_pretty row
+    | TyVar { contents = Unbound(_, (ClosedRow _ as row), _) } ->
+      print_row ty_pretty row
     | TyArrow (from, dst) ->
       ty_pretty from ^ " -> " ^ ty_pretty dst
     | TyName name -> name
@@ -109,20 +117,12 @@ module Nine() = struct
       Printf.sprintf "TyVar(Link(%s))" (ty_debug ty)
     | TyVar { contents = Unbound(id, NoRow, scope) } ->
       Printf.sprintf "TyVar(Unbound(%s,%d))" id scope
-    | TyVar { contents = Unbound(id, OpenRow flds, scope) } ->
-      Printf.sprintf "TyVar(Unbound(%s, OpenRow{%s}, %d))" id (ty_fields ty_debug flds) scope
-    | TyVar { contents = Unbound(id, ClosedRow flds, scope) } ->
-      Printf.sprintf "TyVar(Unbound(%s, ClosedRow{%s}, %d))" id (ty_fields ty_debug flds) scope
+    | TyVar { contents = Unbound(id, ((OpenRow _ | ClosedRow _) as row), scope) } ->
+      Printf.sprintf "TyVar(Unbound(%s, %s, %d))" id (print_row ty_debug row) scope
     | TyArrow(from, dst) ->
       "(" ^ ty_debug from ^ " -> " ^ ty_debug dst ^ ")"
     | TyName name -> name
     | TyApp app -> String.concat ~sep:" " (List.map app ~f:ty_debug)
-
-  let print_row f row =
-    match row with
-    | NoRow -> "NoRow"
-    | OpenRow flds -> Printf.sprintf "OpenRow{%s}" (ty_fields f flds)
-    | ClosedRow flds -> Printf.sprintf "ClosedRow{%s}" (ty_fields f flds)
 
   exception Undefined of string
   exception DuplicateDefinition of string
@@ -210,6 +210,12 @@ module Nine() = struct
     | NoRow -> ()
     | OpenRow flds | ClosedRow flds -> List.iter flds ~f
 
+  let map_row ~f row =
+    match row with
+    | NoRow -> NoRow
+    | OpenRow flds -> OpenRow (List.map flds ~f:(fun (id, ty) -> (id, f ty)))
+    | ClosedRow flds -> ClosedRow (List.map flds ~f:(fun (id, ty) -> (id, f ty)))
+
   let apply_tyapp env (ty : ty) : record_ty option =
     let substitute (tbl : (id, ty) Hashtbl.t) (ty : ty) : ty =
       let rec sub ty =
@@ -258,14 +264,22 @@ module Nine() = struct
   (* Occurs check: check if a type variable occurs in a type. If it does, raise
     an exception. *)
   and occurs (src : tv ref) (ty : ty) : unit =
+    (* Follow all the links. If we see a type variable, it will only be
+       Unbound. *)
     match force ty with
-    | TyVar tgt when src == tgt -> raise OccursCheck
+    | TyVar tgt when src == tgt ->
+      (* src type variable occurs in ty. *)
+      raise OccursCheck
     | TyVar ({ contents = Unbound (id, tgt_row, tgt_scope) } as tgt) ->
       row_iter tgt_row (fun (_, ty) -> occurs src ty);
+      (* Grabbed src and tgt's scopes. *)
       let { contents = Unbound(_, _, src_scope) } = src in
+      (* Compute the minimum of their scopes (the outermost scope). *)
       let min_scope = min src_scope tgt_scope in
+      (* Update the tgt's scope to be the minimum. *)
       tgt := Unbound (id, tgt_row, min_scope)
     | TyArrow(from, dst) ->
+      (* Check that src occurs in the arrow type. *)
       occurs src from;
       occurs src dst;
     | TyApp app -> List.iter app ~f:(occurs src)
@@ -284,10 +298,15 @@ module Nine() = struct
 
   (* Unify two types. If they are not unifiable, raise an exception. *)
   and unify env (t1 : ty) (t2 : ty) : unit =
+    (* Follow all the links. If we see any type variables, they will only be
+      Unbound. *)
     let t1, t2 = (force t1, force t2) in
     match (t1, t2) with
-    | _ when equal t1 t2 -> ()
+    | _ when equal t1 t2 ->
+      () (* The types are trivially equal (e.g. TyBool). *)
     | TyArrow (f1, d1), TyArrow (f2, d2) ->
+      (* If both types are function types, unify their corresponding types
+          with each other. *)
       unify env f1 f2;
       unify env d1 d2;
     | TyVar tv, ty | ty, TyVar tv ->
@@ -305,18 +324,28 @@ module Nine() = struct
          | Some flds -> ignore (union_rows env tv_row (ClosedRow flds))
          | None -> raise (unify_failed t1 t2))
       | TyVar other when tv != other ->
+        (* Union the rows of these two distinct type variables, and lower
+          the surviving tvar's scope to the minimum. *)
         let Unbound(id, other_row, other_scope) = !other in
         row_iter other_row (fun (_, ty) -> occurs tv ty);
         let min_scope = min src_scope other_scope in
         let row = union_rows env tv_row other_row in
         other := Unbound(id, row, min_scope)
-      | _ when equal tv_row NoRow -> occurs tv ty
-      | _ -> raise (unify_failed t1 t2));
+      | _ when equal tv_row NoRow ->
+        (* If either type is a type variable, ensure that the type variable
+          does not occur in the type. occurs also lowers scopes. *)
+        occurs tv ty
+      | _ ->
+        (* ty is not record-like. Can't unify with a row. *)
+        raise (unify_failed t1 t2));
+      (* Link the type variable to the type. *)
       tv := Link ty
-    | TyName a, TyName b when equal a b -> ()
+    | TyName a, TyName b when equal a b -> () (* The type names are the same. *)
     | TyApp app1, TyApp app2 when List.length app1 = List.length app2 ->
       List.iter2_exn app1 app2 ~f:(unify env)
-    | _ -> raise (unify_failed t1 t2)
+    | _ ->
+      (* Unification has failed. *)
+      raise (unify_failed t1 t2)
 
   (* The environment stores generic types, but sometimes we need to associate
     a non-generalized type to a variable. This function wraps a type into a
@@ -328,7 +357,7 @@ module Nine() = struct
     let rec gen' ty =
       match force ty with
       | TyVar ({ contents = Unbound (id, row, scope) } as tv) when scope > !current_scope ->
-        Hashtbl.set type_params ~key:id ~data:(gen_row row);
+        Hashtbl.set type_params ~key:id ~data:(map_row ~f:gen' row);
         (* Mutate the tvar to Link to its generalized TyName, so the
           post-pass walking the AST doesn't see it as Unbound. *)
         tv := Link (TyName id);
@@ -336,11 +365,6 @@ module Nine() = struct
       | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
       | TyApp app -> TyApp (List.map app ~f:gen')
       | ty -> ty
-    and gen_row row =
-      match row with
-      | NoRow -> NoRow
-      | OpenRow flds -> OpenRow (List.map flds ~f:(fun (id, ty) -> (id, gen' ty)))
-      | ClosedRow flds -> ClosedRow (List.map flds ~f:(fun (id, ty) -> (id, gen' ty)))
     in
     let ty = gen' ty in
     let type_params =
@@ -366,12 +390,6 @@ module Nine() = struct
       | TyApp app -> TyApp (List.map app ~f:inst')
       | ty -> ty
     in
-    let inst_row row =
-      match row with
-      | NoRow -> NoRow
-      | OpenRow flds -> OpenRow (List.map flds ~f:(fun (id, ty) -> (id, inst' ty)))
-      | ClosedRow flds -> ClosedRow (List.map flds ~f:(fun (id, ty) -> (id, inst' ty)))
-    in
     (* Attach the instantiated row constraint to each fresh type variable in the table. *)
     List.iter gty.type_params ~f:(fun (pid, row) ->
       match row with
@@ -379,7 +397,7 @@ module Nine() = struct
       | _ ->
         let TyVar tv = Hashtbl.find_exn tbl pid in
         let Unbound(id, _, scope) = !tv in
-        tv := Unbound(id, inst_row row, scope));
+        tv := Unbound(id, map_row ~f:inst' row, scope));
     inst' gty.ty
 
   (* Turn a generic_ty into its rigid form, so that when annotations are instantiated,
@@ -844,7 +862,7 @@ let%test "generic_tycon_error" =
   ) in
   assert_raises
     (fun () -> typecheck_prog prog)
-    (RowMismatch "ClosedRow{x: bool} and ClosedRow{x: bool, y: bool}")
+    (RowMismatch "{x: bool} and {x: bool, y: bool}")
 
 let%test "value_restriction" =
   let open Nine() in
@@ -927,4 +945,4 @@ let%test "row_ann_missing_field" =
   ) in
   assert_raises
     (fun () -> typecheck_prog prog)
-    (RowMismatch "OpenRow{x: bool} and ClosedRow{y: bool}")
+    (RowMismatch "{x: bool, ...} and {y: bool}")

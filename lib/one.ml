@@ -54,16 +54,15 @@ module One() = struct
   exception OccursCheck
   exception UnboundTypeVar of string
 
-  let undefined_error kind name =
-      Undefined (Printf.sprintf "%s %s not defined" kind name)
-
   let unbound_typevar id =
     UnboundTypeVar (Printf.sprintf "unresolved type variable %s after typechecking" id)
 
+  let undefined_error kind name =
+    Undefined (Printf.sprintf "%s %s not defined" kind name)
+
   let unify_failed t1 t2 =
     UnificationFailure
-      (Printf.sprintf "failed to unify type %s with %s" (ty_pretty t1)
-          (ty_pretty t2))
+      (Printf.sprintf "failed to unify type %s with %s" (ty_pretty t1) (ty_pretty t2))
 
   (* Lookup a variable's type in the environment. *)
   let lookup_var_type name (e : env) : ty =
@@ -84,10 +83,10 @@ module One() = struct
 
   (* Generate a fresh unbound type variable. *)
   let fresh_unbound_var () =
-      let n = !gensym_counter in
-      Int.incr gensym_counter;
-      let tvar = "?" ^ Int.to_string n in
-      TyVar (ref (Unbound tvar))
+    let n = !gensym_counter in
+    Int.incr gensym_counter;
+    let tvar = "?" ^ Int.to_string n in
+    TyVar (ref (Unbound tvar))
 
   (* Occurs check: check if a type variable occurs in a type. If it does, raise
     an exception. *)
@@ -131,7 +130,7 @@ module One() = struct
     match exp with
     | EBool b -> TEBool (b, TyBool) (* A true/false value is of type Bool. *)
     | EVar name ->
-      (* Variable is being used. Look up its type in the environment, *)
+      (* Variable is being used. Look up its type in the environment. *)
       let var_ty = lookup_var_type name env in
       TEVar (name, var_ty)
     | ELam (param, body) ->
@@ -192,8 +191,7 @@ let%test "basic" =
   let open One() in
   let prog = EApp(ELam("x", EVar "x"), EBool true) in
   let x = typecheck_prog prog in
-  let t = typ x in
-  Poly.equal (ty_pretty t) "bool"
+  Poly.equal (ty_pretty (typ x)) "bool"
 
 let%test "basic_error" =
   let open One() in

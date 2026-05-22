@@ -11,7 +11,7 @@ module Six() = struct
     | TyBool (* Bool *)
     | TyArrow of ty * ty (* Function type: T1 -> T2 *)
     | TyVar of tv ref (* Type variable: held behind a mutable reference. *)
-    | TyName of id (* Type name: Foo (a tycon, or a rigid type variable). *)
+    | TyName of id (* Type name: Foo *)
   and record_ty = (id * ty) list
   and row_constraint =
     | NoRow (* No row constraint. *)
@@ -85,15 +85,21 @@ module Six() = struct
     |> List.map ~f:(fun (id, ty) -> id ^ ": " ^ f ty)
     |> String.concat ~sep:", "
 
+  let print_row f row =
+    match row with
+    | NoRow -> "NoRow"
+    | OpenRow flds -> Printf.sprintf "{%s, ...}" (ty_fields f flds)
+    | ClosedRow flds -> Printf.sprintf "{%s}" (ty_fields f flds)
+
   let rec ty_pretty ty =
     match force ty with
     | TyBool -> "bool"
     | TyVar { contents = Link _ } -> failwith "unexpected: Link"
     | TyVar { contents = Unbound(id, NoRow, _) } -> id
-    | TyVar { contents = Unbound(id, OpenRow flds, _) } ->
-      Printf.sprintf "%s{%s}" id (ty_fields ty_pretty flds)
-    | TyVar { contents = Unbound(_, ClosedRow flds, _) } ->
-      Printf.sprintf "{%s}" (ty_fields ty_pretty flds)
+    | TyVar { contents = Unbound(id, (OpenRow _ as row), _) } ->
+      id ^ print_row ty_pretty row
+    | TyVar { contents = Unbound(_, (ClosedRow _ as row), _) } ->
+      print_row ty_pretty row
     | TyArrow (from, dst) ->
       ty_pretty from ^ " -> " ^ ty_pretty dst
     | TyName name -> name
@@ -105,19 +111,11 @@ module Six() = struct
       Printf.sprintf "TyVar(Link(%s))" (ty_debug ty)
     | TyVar { contents = Unbound(id, NoRow, scope) } ->
       Printf.sprintf "TyVar(Unbound(%s,%d))" id scope
-    | TyVar { contents = Unbound(id, OpenRow flds, scope) } ->
-      Printf.sprintf "TyVar(Unbound(%s, OpenRow{%s}, %d))" id (ty_fields ty_debug flds) scope
-    | TyVar { contents = Unbound(id, ClosedRow flds, scope) } ->
-      Printf.sprintf "TyVar(Unbound(%s, ClosedRow{%s}, %d))" id (ty_fields ty_debug flds) scope
+    | TyVar { contents = Unbound(id, ((OpenRow _ | ClosedRow _) as row), scope) } ->
+      Printf.sprintf "TyVar(Unbound(%s, %s, %d))" id (print_row ty_debug row) scope
     | TyArrow(from, dst) ->
       "(" ^ ty_debug from ^ " -> " ^ ty_debug dst ^ ")"
     | TyName name -> name
-
-  let print_row f row =
-    match row with
-    | NoRow -> "NoRow"
-    | OpenRow flds -> Printf.sprintf "OpenRow{%s}" (ty_fields f flds)
-    | ClosedRow flds -> Printf.sprintf "ClosedRow{%s}" (ty_fields f flds)
 
   exception Undefined of string
   exception DuplicateDefinition of string
@@ -160,17 +158,10 @@ module Six() = struct
     | Some (VarBind t) -> t
     | _ -> raise (undefined_error "variable" name)
 
-  (* Lookup a type constructor in the environment. *)
-  let lookup_tycon name (e : env) : tycon =
+  let lookup_binding name (e : env) : bind =
     match List.Assoc.find e ~equal name with
-    | Some (TypeBind t) -> t
-    | _ -> raise (undefined_error "type" name)
-
-  (* Is this name in scope as a rigid type variable? *)
-  let is_typevar name (e : env) : bool =
-    match List.Assoc.find e ~equal name with
-    | Some TypeVarBind -> true
-    | _ -> false
+    | Some b -> b
+    | None -> raise (undefined_error "type" name)
 
   (* Get the type of a typed expression. *)
   let typ (texp : texp) : ty =
@@ -266,15 +257,15 @@ module Six() = struct
       let Unbound(_, tv_row, src_scope) = !tv in
       (match ty with
       | TyName tname ->
-        if is_typevar tname env then
-          (match tv_row with
-           | NoRow -> ()
-             (* We are only considering type variables without row constraints right now.
-                Link will happen after the match, via tv := Link ty *)
-           | _ -> raise (unify_failed t1 t2))
-        else
-          let tc = lookup_tycon tname env in
-          ignore (union_rows env tv_row (ClosedRow tc.ty))
+        (match lookup_binding tname env with
+         | TypeVarBind ->
+           (* We are only considering type variables without row constraints right now.
+              Link will happen after the match, via tv := Link ty *)
+           (match tv_row with
+            | NoRow -> ()
+            | _ -> raise (unify_failed t1 t2))
+         | TypeBind tc -> ignore (union_rows env tv_row (ClosedRow tc.ty))
+         | VarBind _ -> raise (undefined_error "type" tname))
       | TyVar other when tv != other ->
         (* Union the rows of these two distinct type variables, and lower
           the surviving tvar's scope to the minimum. *)
@@ -409,12 +400,13 @@ module Six() = struct
       (match force (typ rcd) with
       | TyName tname ->
         (* Since we don't handle row polymorphism, we can't project a field off this type. *)
-        if is_typevar tname env then
-          raise (expected_ty_error "record" tname);
-        let tc = lookup_tycon tname env in
-        (match List.Assoc.find tc.ty ~equal fld with
-        | Some ty -> TEProj (rcd, fld, ty)
-        | _ -> raise (missing_field fld tc.name))
+        (match lookup_binding tname env with
+         | TypeVarBind -> raise (expected_ty_error "record" tname)
+         | TypeBind tc ->
+           (match List.Assoc.find tc.ty ~equal fld with
+            | Some ty -> TEProj (rcd, fld, ty)
+            | _ -> raise (missing_field fld tc.name))
+         | VarBind _ -> raise (undefined_error "type" tname))
       | TyVar ({ contents = Unbound(id, row, scope) } as tv) ->
         let fld_ty = fresh_unbound_var () in
         let row = union_rows env row (OpenRow [(fld, fld_ty)]) in
