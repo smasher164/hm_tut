@@ -895,3 +895,44 @@ let%test "value_restriction_error" =
   assert_raises
     (fun () -> typecheck_prog prog)
     (UnificationFailure "failed to unify type bool with Unit")
+
+(* Polymorphic row annotation: `get_x` is declared
+  `forall 'r :: { x: bool, ... } => 'r -> bool`. Inside its body, the
+  rigid binding lets us project `r.x` knowing the row constrains it to
+  bool. At the call site, the typevar instantiates and unifies against
+  Foo's closed row; Foo has the required `x` field (plus extras), so the
+  application typechecks. *)
+let%test "row_ann" =
+  let open Nine() in
+  let prog = (
+    [{name = "Foo"; type_params = []; ty = [("x", TyBool); ("y", TyBool)]}],
+    ELet(("get_x",
+      Some {type_params = [("'r", OpenRow [("x", TyBool)])];
+            ty = TyArrow(TyName "'r", TyBool)},
+      ELam("r", EProj(EVar "r", "x"))),
+    ELet(("foo", Some {type_params = []; ty = TyName "Foo"},
+      ERecord [("x", EBool true); ("y", EBool false)]),
+      EApp(EVar "get_x", EVar "foo")))
+  ) in
+  let x = typecheck_prog prog in
+  Poly.equal (ty_pretty (typ x)) "bool"
+
+(* Negative: same annotation, but the record we pass in lacks the `x`
+  field the row constraint requires. Unification of the instantiated
+  typevar (constrained to have `x: bool`) against Foo's closed row
+  (which only has `y`) fails. *)
+let%test "row_ann_missing_field" =
+  let open Nine() in
+  let prog = (
+    [{name = "Foo"; type_params = []; ty = [("y", TyBool)]}],
+    ELet(("get_x",
+      Some {type_params = [("'r", OpenRow [("x", TyBool)])];
+            ty = TyArrow(TyName "'r", TyBool)},
+      ELam("r", EProj(EVar "r", "x"))),
+    ELet(("foo", Some {type_params = []; ty = TyName "Foo"},
+      ERecord [("y", EBool true)]),
+      EApp(EVar "get_x", EVar "foo")))
+  ) in
+  assert_raises
+    (fun () -> typecheck_prog prog)
+    (RowMismatch "OpenRow{x: bool} and ClosedRow{y: bool}")
