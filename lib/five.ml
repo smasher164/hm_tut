@@ -1,5 +1,6 @@
 open Base
 open Poly
+open Mini_ml
 
 module Five() = struct
   type id = string
@@ -394,6 +395,33 @@ module Five() = struct
     let texp = infer env exp in
     check_no_unbound texp;
     texp
+
+  let convert_prog (ast_prog : Ast.prog) : prog =
+    Ast.map_prog
+      ~on_ty_bool:(fun () -> TyBool)
+      ~on_ty_arrow:(fun a b -> TyArrow (a, b))
+      ~on_ty_name:(fun x -> TyName x)
+      ~on_generic_ty:(fun _ ty -> ty)
+      ~on_tycon:(fun name type_params ty ->
+        if not (List.is_empty type_params) then
+          failwith "tycon type parameters not supported"
+        else { name; ty })
+      ~on_let_decl:(fun id ann rhs -> (id, ann, rhs))
+      ~on_bool:(fun b -> EBool b)
+      ~on_var:(fun x -> EVar x)
+      ~on_lam:(fun x body -> ELam (x, body))
+      ~on_app:(fun f a -> EApp (f, a))
+      ~on_if:(fun c t e -> EIf (c, t, e))
+      ~on_record:(fun lit -> ERecord lit)
+      ~on_with:(fun rcd lit -> EWith (rcd, lit))
+      ~on_proj:(fun rcd fld -> EProj (rcd, fld))
+      ~on_let:(fun d body -> ELet (d, body))
+      ~on_letrec:(fun ds body -> ELetRec (ds, body))
+      ~on_prog:(fun tycons e -> (tycons, e))
+      ast_prog
+
+  let typecheck_source src =
+    src |> Parser.parse_string |> convert_prog |> typecheck_prog
 end
 
 let assert_raises f e =
