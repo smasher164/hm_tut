@@ -241,11 +241,13 @@ module Five() = struct
         row_iter other_row (fun (_, ty) -> occurs tv ty);
         let row = union_rows env tv_row other_row in
         other := Unbound(id, row)
-      | _ when not (equal tv_row NoRow) -> raise (unify_failed t1 t2)
-      | _ ->
+      | _ when equal tv_row NoRow ->
         (* If either type is a type variable, ensure that the type variable does
            not occur in the type. *)
-        occurs tv ty);
+        occurs tv ty
+      | _ ->
+        (* ty is not record-like. Can't unify with a row. *)
+        raise (unify_failed t1 t2));
       (* Link the type variable to the type. *)
       tv := Link ty
     | TyName a, TyName b when equal a b -> () (* The type names are the same. *)

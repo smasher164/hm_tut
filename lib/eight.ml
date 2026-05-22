@@ -48,7 +48,7 @@ module Eight() = struct
     | ELam of id * exp
     | EApp of exp * exp
     | EIf of exp * exp * exp
-    | ERecord of record_lit (* {x = true, y = false} — anonymous *)
+    | ERecord of record_lit (* {x = true, y = false} *)
     | EWith of exp * record_lit (* { r with x = true } *)
     | EProj of exp * id (* r.y *)
     | ELet of let_decl * exp

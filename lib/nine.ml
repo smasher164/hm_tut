@@ -209,11 +209,6 @@ module Nine() = struct
       in sub ty
     in
     match force ty with
-    | TyName name ->
-      (match lookup_binding name env with
-       | TypeBind tc when List.is_empty tc.type_params -> Some tc.ty
-       | TypeBind _ | TypeVarBind _ -> None
-       | VarBind _ -> raise (undefined_error "type" name))
     | TyApp (TyName name :: args) ->
       (match lookup_binding name env with
        | TypeBind tc ->

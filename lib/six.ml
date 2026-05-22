@@ -45,7 +45,7 @@ module Six() = struct
     | ELam of id * exp (* fun x -> x *)
     | EApp of exp * exp (* f arg *)
     | EIf of exp * exp * exp (* if <exp> then <exp> else <exp> *)
-    | ERecord of record_lit (* {x = true, y = false} — anonymous *)
+    | ERecord of record_lit (* {x = true, y = false} *)
     | EWith of exp * record_lit (* { r with x = true } *)
     | EProj of exp * id (* r.y *)
     | ELet of let_decl * exp (* let x : <type-annotation> = <exp> in <exp> *)
@@ -283,14 +283,13 @@ module Six() = struct
         let min_scope = min src_scope other_scope in
         let row = union_rows env tv_row other_row in
         other := Unbound(id, row, min_scope)
-      | _ when not (equal tv_row NoRow) ->
-        (* The tvar carries a row constraint but the other side is not a
-          record-like type — no possible unification. *)
-        raise (unify_failed t1 t2)
-      | _ ->
+      | _ when equal tv_row NoRow ->
         (* If either type is a type variable, ensure that the type variable
           does not occur in the type. occurs also lowers scopes. *)
-        occurs tv ty);
+        occurs tv ty
+      | _ ->
+        (* ty is not record-like. Can't unify with a row. *)
+        raise (unify_failed t1 t2));
       (* Link the type variable to the type. *)
       tv := Link ty
     | TyName a, TyName b when equal a b -> () (* The type names are the same. *)
