@@ -172,9 +172,7 @@ module Two() = struct
           branch) *)
       TEIf (cond, thn, els, typ thn)
   
-  (* Post-pass: reject any Unbound type variable surviving in the typed AST.
-    Every embedded type should be concrete by the time inference finishes; a
-    surviving Unbound means the program has a type we couldn't determine. *)
+  (* Walk the typed AST to check for any Unbound type variables, and if found, raise an exception. *)
   let check_no_unbound (texp : texp) : unit =
     let rec ck_ty (ty : ty) : unit =
       match force ty with

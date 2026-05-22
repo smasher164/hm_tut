@@ -1,10 +1,6 @@
 open Base
 open Poly
 
-(* Seven.ml's row-polymorphic HM with let-generalization and rigid
-  type variables, extended with *parameterized* type constructors. A
-  tycon now declares a list of type parameters, and concrete uses
-  apply the tycon to specific arguments via `TyApp`. *)
 module Eight() = struct
   type id = string
   (* The scope is an integer counter that holds the depth of the current
@@ -26,17 +22,16 @@ module Eight() = struct
   and tv = (* A type variable *)
     | Unbound of id * row_constraint * scope
     | Link of ty
-  (* Type declaration/constructor. Each declares some type parameters and
-    its field types. A tycon is referenced as `TyName tc.name` when its
-    parameter list is empty, or `TyApp [TyName tc.name; arg1; ..]` when it
-    is applied to type arguments. *)
+  (* Type declaration/constructor with type parameters. All type declarations are nominal records. *)
   type tycon = {
     name : id;
     type_params : id list;
     ty : record_ty;
   }
-  (* A generic type: forall p1::r1..pn::rn. ty, with row constraints on
-    each parameter as in seven.ml. *)
+  (* A generic type. Should be read as forall p1::r1..pn::rn. ty, where each
+    pi is a type parameter and ri its row constraint (NoRow for plain
+    parameters). It is separated from ty because in HM, a forall can
+  only be at the top level of a type. *)
   type generic_ty = {
     type_params : (id * row_constraint) list;
     ty : ty;
@@ -45,7 +40,7 @@ module Eight() = struct
     | VarBind of generic_ty
     | TypeBind of tycon
     | TypeVarBind of row_constraint
-      (* Rigid type-variable binding (an annotation's `'a` in scope). *)
+      (* A type variable binding marks some rigid type and its corresponding row constraints. *)
   type env = (id * bind) list
   type exp =
     | EBool of bool
@@ -169,15 +164,10 @@ module Eight() = struct
     | Some (VarBind t) -> t
     | _ -> raise (undefined_error "variable" name)
 
-  let lookup_tycon name (e : env) : tycon =
+  let lookup_binding name (e : env) : bind =
     match List.Assoc.find e ~equal name with
-    | Some (TypeBind t) -> t
-    | _ -> raise (undefined_error "type" name)
-
-  let lookup_typevar name (e : env) : row_constraint option =
-    match List.Assoc.find e ~equal name with
-    | Some (TypeVarBind r) -> Some r
-    | _ -> None
+    | Some b -> b
+    | None -> raise (undefined_error "type" name)
 
   let typ (texp : texp) : ty =
     match texp with
@@ -208,10 +198,7 @@ module Eight() = struct
     | NoRow -> ()
     | OpenRow flds | ClosedRow flds -> List.iter flds ~f
 
-  (* Resolve a tycon reference (`TyName name` for an unparameterized tycon
-    or `TyApp (TyName name :: args)` for an applied one) to its concrete
-    record fields. Type parameters are substituted with the supplied args. *)
-  let resolve_tycon env (ty : ty) : record_ty option =
+  let apply_tyapp env (ty : ty) : record_ty option =
     let substitute (tbl : (id, ty) Hashtbl.t) (ty : ty) : ty =
       let rec sub ty =
         match force ty with
@@ -225,26 +212,17 @@ module Eight() = struct
       in sub ty
     in
     match force ty with
-    | TyName name ->
-      (* Tycon reference with no type arguments. Valid only if the tycon
-        itself has no type parameters. *)
-      (match lookup_typevar name env with
-       | Some _ -> None  (* It's a rigid, not a tycon. *)
-       | None ->
-         let tc = lookup_tycon name env in
-         if not (List.is_empty tc.type_params) then None
-         else Some tc.ty)
     | TyApp (TyName name :: args) ->
-      let tc = lookup_tycon name env in
-      (match List.zip tc.type_params args with
-       | Ok pairs ->
-         let tbl = Hashtbl.of_alist_exn (module String) pairs in
-         Some (List.map tc.ty ~f:(fun (id, t) -> (id, substitute tbl t)))
-       | Unequal_lengths -> None)
+      (match lookup_binding name env with
+       | TypeBind tc ->
+         (match List.zip tc.type_params args with
+          | Ok pairs ->
+            let tbl = Hashtbl.of_alist_exn (module String) pairs in
+            Some (List.map tc.ty ~f:(fun (id, t) -> (id, substitute tbl t)))
+          | Unequal_lengths -> None)
+       | TypeVarBind _ | VarBind _ -> raise (undefined_error "type" name))
     | _ -> None
 
-  (* Union two row constraints from a single unbound type variable's
-    perspective. Same rules as seven.ml. *)
   let rec union_rows env (row_a: row_constraint) (row_b: row_constraint) : row_constraint =
     match (row_a, row_b) with
     | NoRow, row | row, NoRow -> row
@@ -265,7 +243,8 @@ module Eight() = struct
   and fld_exists env (rcd: record_ty) id ty =
     List.exists rcd ~f:(fun (f,t) -> String.equal f id && (unify env t ty; true))
 
-  (* Occurs check + scope lowering. Walks rows, TyArrow, and TyApp args. *)
+  (* Occurs check: check if a type variable occurs in a type. If it does, raise
+    an exception. *)
   and occurs (src : tv ref) (ty : ty) : unit =
     match force ty with
     | TyVar tgt when src == tgt -> raise OccursCheck
@@ -280,8 +259,7 @@ module Eight() = struct
     | TyApp app -> List.iter app ~f:(occurs src)
     | _ -> ()
 
-  (* A tvar's accumulated row must be a subset of a rigid's row. Same rule
-    as seven.ml — rigid rows can't be widened. *)
+  (* Check that tv_row's fields are contained within rigid_row. *)
   and check_rigid_subset env tv_row rigid_row =
     match tv_row, rigid_row with
     | NoRow, _ -> ()
@@ -303,19 +281,14 @@ module Eight() = struct
       let Unbound(_, tv_row, src_scope) = !tv in
       (match ty with
       | TyName tname ->
-        (* Rigid (typevar in scope), or tycon with no args. *)
-        (match lookup_typevar tname env with
-         | Some rigid_row -> check_rigid_subset env tv_row rigid_row
-         | None ->
-           let tc = lookup_tycon tname env in
-           if not (List.is_empty tc.type_params) then
-             raise (unify_failed t1 t2)
-           else
-             ignore (union_rows env tv_row (ClosedRow tc.ty)))
+        (match lookup_binding tname env with
+         | TypeVarBind rigid_row -> check_rigid_subset env tv_row rigid_row
+         | TypeBind tc when List.is_empty tc.type_params ->
+           ignore (union_rows env tv_row (ClosedRow tc.ty))
+         | TypeBind _ -> raise (unify_failed t1 t2)
+         | VarBind _ -> raise (undefined_error "type" tname))
       | TyApp _ ->
-        (* Applied tycon: resolve fields with type-args substituted in,
-          then constrain the tvar's row against that closed row. *)
-        (match resolve_tycon env ty with
+        (match apply_tyapp env ty with
          | Some flds -> ignore (union_rows env tv_row (ClosedRow flds))
          | None -> raise (unify_failed t1 t2))
       | TyVar other when tv != other ->
@@ -324,8 +297,8 @@ module Eight() = struct
         let min_scope = min src_scope other_scope in
         let row = union_rows env tv_row other_row in
         other := Unbound(id, row, min_scope)
-      | _ when not (equal tv_row NoRow) -> raise (unify_failed t1 t2)
-      | _ -> occurs tv ty);
+      | _ when equal tv_row NoRow -> occurs tv ty
+      | _ -> raise (unify_failed t1 t2));
       tv := Link ty
     | TyName a, TyName b when equal a b -> ()
     | TyApp app1, TyApp app2 when List.length app1 = List.length app2 ->
@@ -334,8 +307,6 @@ module Eight() = struct
 
   let dont_generalize ty : generic_ty = { type_params = []; ty }
 
-  (* Generalize: tvars at scope > current become quantified parameters,
-    carrying their row constraints. Walks `TyApp` args as well. *)
   let gen (ty: ty) : generic_ty =
     let type_params : (id, row_constraint) Hashtbl.t = Hashtbl.create (module String) in
     let rec gen' ty =
@@ -343,7 +314,7 @@ module Eight() = struct
       | TyVar ({ contents = Unbound (id, row, scope) } as tv) when scope > !current_scope ->
         Hashtbl.set type_params ~key:id ~data:(gen_row row);
         (* Mutate the tvar to Link to its generalized TyName, so the
-          post-pass walking the AST doesn't flag it as still-unresolved. *)
+          post-pass walking the AST doesn't see it as Unbound. *)
         tv := Link (TyName id);
         TyName id
       | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
@@ -362,8 +333,9 @@ module Eight() = struct
     in
     { type_params; ty }
 
-  (* Instantiate: each type parameter becomes a fresh tvar carrying its
-    instantiated row. Walks `TyApp` args. *)
+  (* Instantiate a generic type by replacing all the type parameters
+   with fresh unbound type variables. Ensure that the same ID gets
+   mapped to the same unbound type variable by using an (id, ty) Hashtbl. *)
   let inst (gty: generic_ty) : ty =
     let tbl = Hashtbl.create (module String) in
     List.iter gty.type_params ~f:(fun (pid, _) ->
@@ -384,6 +356,7 @@ module Eight() = struct
       | OpenRow flds -> OpenRow (List.map flds ~f:(fun (id, ty) -> (id, inst' ty)))
       | ClosedRow flds -> ClosedRow (List.map flds ~f:(fun (id, ty) -> (id, inst' ty)))
     in
+    (* Attach the instantiated row constraint to each fresh type variable in the table. *)
     List.iter gty.type_params ~f:(fun (pid, row) ->
       match row with
       | NoRow -> ()
@@ -445,24 +418,18 @@ module Eight() = struct
       let rcd = infer env rcd in
       (match force (typ rcd) with
       | TyName tname ->
-        (* As in seven.ml: rigid (typevar in scope) or tycon. The tycon
-          path here requires the tycon to be unparameterized — a
-          parameterized tycon used without args is invalid. *)
         let (flds, name_for_err) =
-          match lookup_typevar tname env with
-          | Some (OpenRow flds | ClosedRow flds) -> (flds, tname)
-          | Some NoRow -> raise (expected_ty_error "record" tname)
-          | None ->
-            let tc = lookup_tycon tname env in
-            (tc.ty, tc.name)
+          match lookup_binding tname env with
+          | TypeVarBind (OpenRow flds | ClosedRow flds) -> (flds, tname)
+          | TypeVarBind NoRow -> raise (expected_ty_error "record" tname)
+          | TypeBind tc -> (tc.ty, tc.name)
+          | VarBind _ -> raise (undefined_error "type" tname)
         in
         (match List.Assoc.find flds ~equal fld with
         | Some ty -> TEProj (rcd, fld, ty)
         | _ -> raise (missing_field fld name_for_err))
       | TyApp _ as ty_app ->
-        (* Applied tycon: substitute type args into the tycon's fields,
-          then look up the field there. *)
-        (match resolve_tycon env ty_app with
+        (match apply_tyapp env ty_app with
          | Some flds ->
            (match List.Assoc.find flds ~equal fld with
             | Some ty -> TEProj (rcd, fld, ty)
@@ -533,7 +500,7 @@ module Eight() = struct
       let body = infer env_body body in
       TELetRec (tdecls, body, typ body)
 
-  (* Post-pass: reject any Unbound type variable surviving in the typed AST. *)
+  (* Walk the typed AST to check for any Unbound type variables, and if found, raise an exception. *)
   let check_no_unbound (texp : texp) : unit =
     let rec ck_ty (ty : ty) : unit =
       match force ty with
@@ -720,8 +687,6 @@ let%test "let_gen_scope_error" =
     (fun () -> typecheck_prog prog)
     (UnificationFailure "failed to unify type bool with bool -> ?2")
 
-(* TypeVarBind for let: a nested annotation mentioning 'a from an outer
-  annotated let resolves to the outer let's rigid `TyName "'a"`. *)
 let%test "let_typevar_ref" =
   let open Eight() in
   let prog = ([],
@@ -745,10 +710,6 @@ let%test "let_rec_typevar_ref" =
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool"
 
-(* Row poly across nominal tycons: f generalizes to a row-polymorphic
-  forall, then is applied to records of two different tycons (Foo and
-  Bar) with different `x` field types. Each call site freshly
-  instantiates f. *)
 let%test "let_gen_row" =
   let open Eight() in
   let prog = (
@@ -802,7 +763,6 @@ let%test "let_rec_rigid_error" =
     (fun () -> typecheck_prog prog)
     (TypeError "expression does not have type 'a -> 'b")
 
-(* Parameterized tycon: build a `box bool` via annotation, project x. *)
 let%test "generic_tycon" =
   let open Eight() in
   let prog = (
@@ -815,8 +775,6 @@ let%test "generic_tycon" =
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool"
 
-(* Parameterized tycon stays applied in a generic let: f generalizes,
-  inst gives fresh type args at each call site. *)
 let%test "generic_tycon_let_gen" =
   let open Eight() in
   let prog = (
@@ -835,8 +793,6 @@ let%test "generic_tycon_let_gen" =
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "box bool"
 
-(* Anonymous literal with the wrong fields can't unify with the annotated
-  `box bool` — the literal's closed row is too small. *)
 let%test "generic_tycon_error" =
   let open Eight() in
   let prog = (

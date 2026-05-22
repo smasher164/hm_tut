@@ -1,11 +1,6 @@
 open Base
 open Poly
 
-(* Two.ml's HM, extended with `let` bindings (with optional type
-  annotations). No generalization yet — a `let`-bound function is
-  monomorphic, pinned by its first use. Records and row polymorphism
-  show up in the next chapter, once the annotation form is in place to
-  tie record literals to nominal tycons. *)
 module Three() = struct
   type id = string
   type ty =
@@ -192,10 +187,6 @@ module Three() = struct
           branch) *)
       TEIf (cond, thn, els, typ thn)
     | ELet ((id, ann, rhs), body) ->
-      (* When the let has an annotation, check the RHS against the annotated
-        type (re-raising any unification failure as a TypeError). Otherwise
-        just infer the RHS. The binding's type is whatever the RHS ended up
-        being; there's no generalization yet, so the binding is monomorphic. *)
       let rhs =
         match ann with
         | Some ann -> check env ann rhs
@@ -205,9 +196,7 @@ module Three() = struct
       let body = infer env body in
       TELet ((id, ann, rhs), body, typ body)
 
-  (* Post-pass: reject any Unbound type variable surviving in the typed AST.
-    Every embedded type should be concrete by the time inference finishes;
-    a surviving Unbound means the program had a type we couldn't determine. *)
+  (* Walk the typed AST to check for any Unbound type variables, and if found, raise an exception. *)
   let check_no_unbound (texp : texp) : unit =
     let rec ck_ty (ty : ty) : unit =
       match force ty with
@@ -274,8 +263,6 @@ let%test "let" =
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool"
 
-(* Annotations are enforced: if the RHS doesn't have the annotated type,
-  raise a TypeError. *)
 let%test "let_ann" =
   let open Three() in
   let prog =
@@ -285,9 +272,6 @@ let%test "let_ann" =
     (fun () -> typecheck_prog prog)
     (TypeError "expression does not have type bool")
 
-(* No let-generalization yet: f's type is pinned by its first use, so a
-  later use at a different type fails. (Compare with six.ml, where
-  let-generalization makes f polymorphic.) *)
 let%test "let_nogen" =
   let open Three() in
   let prog =

@@ -1,12 +1,6 @@
 open Base
 open Poly
 
-(* Eight.ml's parameterized type constructors, plus the *value restriction*:
-  let-generalization is gated on whether the right-hand side is a syntactic
-  value (a bool literal, variable, lambda, or record literal whose fields
-  are themselves values). Non-value expressions like applications keep
-  their inferred type but are *not* generalized — this prevents the classic
-  unsoundness of polymorphism over mutable references. *)
 module Nine() = struct
   type id = string
   type scope = int
@@ -37,6 +31,7 @@ module Nine() = struct
     | VarBind of generic_ty
     | TypeBind of tycon
     | TypeVarBind of row_constraint
+      (* A type variable binding marks some rigid type and its corresponding row constraints. *)
   type env = (id * bind) list
   type exp =
     | EBool of bool
@@ -160,15 +155,10 @@ module Nine() = struct
     | Some (VarBind t) -> t
     | _ -> raise (undefined_error "variable" name)
 
-  let lookup_tycon name (e : env) : tycon =
+  let lookup_binding name (e : env) : bind =
     match List.Assoc.find e ~equal name with
-    | Some (TypeBind t) -> t
-    | _ -> raise (undefined_error "type" name)
-
-  let lookup_typevar name (e : env) : row_constraint option =
-    match List.Assoc.find e ~equal name with
-    | Some (TypeVarBind r) -> Some r
-    | _ -> None
+    | Some b -> b
+    | None -> raise (undefined_error "type" name)
 
   let typ (texp : texp) : ty =
     match texp with
@@ -183,12 +173,6 @@ module Nine() = struct
     | TELet (_, _, ty) -> ty
     | TELetRec (_, _, ty) -> ty
 
-  (* Syntactic-value test for the value restriction. A *value* is something
-    whose evaluation produces a result without further computation: bools,
-    variables (already evaluated), lambdas (un-applied functions), and
-    record literals whose fields are themselves values. Applications,
-    conditionals, projections, and let-bindings are not values — they
-    require computation that could allocate a fresh reference. *)
   let rec is_value (x: texp) : bool =
     match x with
     | TEBool _ | TEVar _ | TELam _ -> true
@@ -211,7 +195,7 @@ module Nine() = struct
     | NoRow -> ()
     | OpenRow flds | ClosedRow flds -> List.iter flds ~f
 
-  let resolve_tycon env (ty : ty) : record_ty option =
+  let apply_tyapp env (ty : ty) : record_ty option =
     let substitute (tbl : (id, ty) Hashtbl.t) (ty : ty) : ty =
       let rec sub ty =
         match force ty with
@@ -226,19 +210,19 @@ module Nine() = struct
     in
     match force ty with
     | TyName name ->
-      (match lookup_typevar name env with
-       | Some _ -> None
-       | None ->
-         let tc = lookup_tycon name env in
-         if not (List.is_empty tc.type_params) then None
-         else Some tc.ty)
+      (match lookup_binding name env with
+       | TypeBind tc when List.is_empty tc.type_params -> Some tc.ty
+       | TypeBind _ | TypeVarBind _ -> None
+       | VarBind _ -> raise (undefined_error "type" name))
     | TyApp (TyName name :: args) ->
-      let tc = lookup_tycon name env in
-      (match List.zip tc.type_params args with
-       | Ok pairs ->
-         let tbl = Hashtbl.of_alist_exn (module String) pairs in
-         Some (List.map tc.ty ~f:(fun (id, t) -> (id, substitute tbl t)))
-       | Unequal_lengths -> None)
+      (match lookup_binding name env with
+       | TypeBind tc ->
+         (match List.zip tc.type_params args with
+          | Ok pairs ->
+            let tbl = Hashtbl.of_alist_exn (module String) pairs in
+            Some (List.map tc.ty ~f:(fun (id, t) -> (id, substitute tbl t)))
+          | Unequal_lengths -> None)
+       | TypeVarBind _ | VarBind _ -> raise (undefined_error "type" name))
     | _ -> None
 
   let rec union_rows env (row_a: row_constraint) (row_b: row_constraint) : row_constraint =
@@ -296,16 +280,14 @@ module Nine() = struct
       let Unbound(_, tv_row, src_scope) = !tv in
       (match ty with
       | TyName tname ->
-        (match lookup_typevar tname env with
-         | Some rigid_row -> check_rigid_subset env tv_row rigid_row
-         | None ->
-           let tc = lookup_tycon tname env in
-           if not (List.is_empty tc.type_params) then
-             raise (unify_failed t1 t2)
-           else
-             ignore (union_rows env tv_row (ClosedRow tc.ty)))
+        (match lookup_binding tname env with
+         | TypeVarBind rigid_row -> check_rigid_subset env tv_row rigid_row
+         | TypeBind tc when List.is_empty tc.type_params ->
+           ignore (union_rows env tv_row (ClosedRow tc.ty))
+         | TypeBind _ -> raise (unify_failed t1 t2)
+         | VarBind _ -> raise (undefined_error "type" tname))
       | TyApp _ ->
-        (match resolve_tycon env ty with
+        (match apply_tyapp env ty with
          | Some flds -> ignore (union_rows env tv_row (ClosedRow flds))
          | None -> raise (unify_failed t1 t2))
       | TyVar other when tv != other ->
@@ -314,8 +296,8 @@ module Nine() = struct
         let min_scope = min src_scope other_scope in
         let row = union_rows env tv_row other_row in
         other := Unbound(id, row, min_scope)
-      | _ when not (equal tv_row NoRow) -> raise (unify_failed t1 t2)
-      | _ -> occurs tv ty);
+      | _ when equal tv_row NoRow -> occurs tv ty
+      | _ -> raise (unify_failed t1 t2));
       tv := Link ty
     | TyName a, TyName b when equal a b -> ()
     | TyApp app1, TyApp app2 when List.length app1 = List.length app2 ->
@@ -331,7 +313,7 @@ module Nine() = struct
       | TyVar ({ contents = Unbound (id, row, scope) } as tv) when scope > !current_scope ->
         Hashtbl.set type_params ~key:id ~data:(gen_row row);
         (* Mutate the tvar to Link to its generalized TyName, so the
-          post-pass walking the AST doesn't flag it as still-unresolved. *)
+          post-pass walking the AST doesn't see it as Unbound. *)
         tv := Link (TyName id);
         TyName id
       | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
@@ -383,9 +365,6 @@ module Nine() = struct
     let extras = List.map gty.type_params ~f:(fun (id, row) -> (id, TypeVarBind row)) in
     (extras, gty.ty)
 
-  (* Decide whether to generalize a let-bound expression. The value
-    restriction gates generalization on the RHS being a syntactic value;
-    a non-value is bound at its inferred (monomorphic) type. *)
   let generalize_if_value rhs : generic_ty =
     if is_value rhs then gen (typ rhs)
     else dont_generalize (typ rhs)
@@ -439,18 +418,17 @@ module Nine() = struct
       (match force (typ rcd) with
       | TyName tname ->
         let (flds, name_for_err) =
-          match lookup_typevar tname env with
-          | Some (OpenRow flds | ClosedRow flds) -> (flds, tname)
-          | Some NoRow -> raise (expected_ty_error "record" tname)
-          | None ->
-            let tc = lookup_tycon tname env in
-            (tc.ty, tc.name)
+          match lookup_binding tname env with
+          | TypeVarBind (OpenRow flds | ClosedRow flds) -> (flds, tname)
+          | TypeVarBind NoRow -> raise (expected_ty_error "record" tname)
+          | TypeBind tc -> (tc.ty, tc.name)
+          | VarBind _ -> raise (undefined_error "type" tname)
         in
         (match List.Assoc.find flds ~equal fld with
         | Some ty -> TEProj (rcd, fld, ty)
         | _ -> raise (missing_field fld name_for_err))
       | TyApp _ as ty_app ->
-        (match resolve_tycon env ty_app with
+        (match apply_tyapp env ty_app with
          | Some flds ->
            (match List.Assoc.find flds ~equal fld with
             | Some ty -> TEProj (rcd, fld, ty)
@@ -477,8 +455,7 @@ module Nine() = struct
         | None -> infer env rhs
       in
       leave_scope();
-      (* Value restriction: only generalize when the RHS is a syntactic
-        value (or has an explicit annotation, which the user vouched for). *)
+      (* Value restriction: only generalize if the RHS is a value. *)
       let ty_gen =
         match ann with
         | Some ann -> ann
@@ -523,10 +500,7 @@ module Nine() = struct
       let body = infer env_body body in
       TELetRec (tdecls, body, typ body)
 
-  (* Post-pass: reject any Unbound type variable surviving in the typed AST.
-    The value restriction is what makes this teeth-bearing here: a non-value
-    let-binding (like `ref X`) keeps its inferred type un-generalized, so
-    any tvar that survives unification stays Unbound and is caught here. *)
+  (* Walk the typed AST to check for any Unbound type variables, and if found, raise an exception. *)
   let check_no_unbound (texp : texp) : unit =
     let rec ck_ty (ty : ty) : unit =
       match force ty with
@@ -832,11 +806,6 @@ let%test "generic_tycon_error" =
     (fun () -> typecheck_prog prog)
     (RowMismatch "ClosedRow{x: bool} and ClosedRow{x: bool, y: bool}")
 
-(* Value restriction passes: ref/deref/update over Ref tycon. r is bound
-  by `ref (fun x -> x)`, which is an EApp (not a value), so VR refuses to
-  generalize r. With r monomorphically `Ref (?a -> ?a)`, both subsequent
-  updates happen to be bool-returning functions, so ?a unifies with bool
-  and the program typechecks. *)
 let%test "value_restriction" =
   let open Nine() in
   let prog = (
@@ -862,13 +831,6 @@ let%test "value_restriction" =
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "Unit"
 
-(* Value restriction blocks unsoundness: same setup as above, but the
-  final line dereferences r (now pinned to `Ref (bool -> bool)`) and
-  applies the result to a Unit value. Without VR, r would generalize to
-  `forall 'a. Ref ('a -> 'a)`, each `deref r` would freshly instantiate
-  to `'a -> 'a`, and applying it to anything would succeed. With VR, r's
-  contents are pinned by the first update, so the second use against a
-  Unit fails. *)
 let%test "value_restriction_error" =
   let open Nine() in
   let prog = (
@@ -896,12 +858,6 @@ let%test "value_restriction_error" =
     (fun () -> typecheck_prog prog)
     (UnificationFailure "failed to unify type bool with Unit")
 
-(* Polymorphic row annotation: `get_x` is declared
-  `forall 'r :: { x: bool, ... } => 'r -> bool`. Inside its body, the
-  rigid binding lets us project `r.x` knowing the row constrains it to
-  bool. At the call site, the typevar instantiates and unifies against
-  Foo's closed row; Foo has the required `x` field (plus extras), so the
-  application typechecks. *)
 let%test "row_ann" =
   let open Nine() in
   let prog = (
@@ -917,10 +873,6 @@ let%test "row_ann" =
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool"
 
-(* Negative: same annotation, but the record we pass in lacks the `x`
-  field the row constraint requires. Unification of the instantiated
-  typevar (constrained to have `x: bool`) against Foo's closed row
-  (which only has `y`) fails. *)
 let%test "row_ann_missing_field" =
   let open Nine() in
   let prog = (

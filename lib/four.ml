@@ -336,11 +336,7 @@ module Four() = struct
       let body = infer env body in
       TELet ((id, ann, rhs), body, typ body)
   
-  (* Post-pass: reject any Unbound type variable surviving in the typed AST.
-    With ELet annotations available, every record literal can be linked
-    to a tycon; a surviving Unbound tvar means a literal stayed anonymous.
-    Polymorphic functions don't show up here because four.ml has no
-    let-generalization yet. *)
+  (* Walk the typed AST to check for any Unbound type variables, and if found, raise an exception. *)
   let check_no_unbound (texp : texp) : unit =
     let rec ck_ty (ty : ty) : unit =
       match force ty with
@@ -422,8 +418,6 @@ let%test "record" =
   let t = typ x in
   Poly.equal (ty_pretty t) "bool"
 
-(* Row poly traversing a nominal boundary: the lambda's parameter only
-  requires field `y`, and we apply it to a record annotated as `Foo`. *)
 let%test "row" =
   let open Four() in
   let prog = (
@@ -435,9 +429,6 @@ let%test "row" =
   let t = typ x in
   Poly.equal (ty_pretty t) "bool"
 
-(* Row poly with two records of distinct tycons in scope at the same
-  time: a lambda needing `r1.x` and `r2.f` accepts a Bar and a Foo
-  respectively. *)
 let%test "row2" =
   let open Four() in
   let prog = (
@@ -454,8 +445,6 @@ let%test "row2" =
   let t = typ x in
   Poly.equal (ty_pretty t) "bool"
 
-(* If-branches with two distinctly-tagged records can't unify into a
-  single result type. *)
 let%test "row_if" =
   let open Four() in
   let prog = (
@@ -470,7 +459,6 @@ let%test "row_if" =
     (fun () -> typecheck_prog prog)
     (UnificationFailure "failed to unify type Foo with Bar")
 
-(* `EWith` updating a field that the tycon doesn't have. *)
 let%test "row_with" =
   let open Four() in
   let prog = (
@@ -493,9 +481,6 @@ let%test "let" =
   let t = typ x in
   Poly.equal (ty_pretty t) "bool"
 
-(* Without let-generalization, f's parameter is pinned by its first use.
-  Calling f on a `Unit` value pins it to `Unit`; the second call with a
-  bool then fails. *)
 let%test "let_nogen" =
   let open Four() in
   let prog = (

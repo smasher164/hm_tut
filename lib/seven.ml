@@ -31,8 +31,8 @@ module Seven() = struct
   }
   (* A generic type. Should be read as forall p1::r1..pn::rn. ty, where each
     pi is a type parameter and ri its row constraint (NoRow for plain
-    parameters). The forall is only allowed at the top level of a type,
-    matching standard HM. *)
+    parameters). It is separated from ty because in HM, a forall can
+  only be at the top level of a type. *)
   type generic_ty = {
     type_params : (id * row_constraint) list;
     ty : ty;
@@ -41,12 +41,7 @@ module Seven() = struct
     | VarBind of generic_ty (* A variable binding maps to a generic type. *)
     | TypeBind of tycon (* A type binding maps to a type constructor. *)
     | TypeVarBind of row_constraint
-      (* A rigid type-variable binding. Introduced when entering the RHS of
-        an annotated let: each declared type parameter becomes a rigid
-        `TyName "'a"` whose only structural information lives here, as the
-        row constraint it must satisfy. The binding's *name* is the rigid
-        name; operations on `TyName "'a"` consult `lookup_typevar` before
-        falling back to `lookup_tycon`. *)
+      (* A type variable binding marks some rigid type and its corresponding row constraints. *)
   type env = (id * bind) list
   type exp =
     | EBool of bool (* true/false *)
@@ -170,19 +165,10 @@ module Seven() = struct
     | Some (VarBind t) -> t
     | _ -> raise (undefined_error "variable" name)
 
-  (* Lookup a type constructor in the environment. *)
-  let lookup_tycon name (e : env) : tycon =
+  let lookup_binding name (e : env) : bind =
     match List.Assoc.find e ~equal name with
-    | Some (TypeBind t) -> t
-    | _ -> raise (undefined_error "type" name)
-
-  (* Lookup a type-variable binding by name. Returns the row constraint
-    the rigid satisfies, or None if the name is not in scope as a type
-    variable (the caller falls back to tycon lookup). *)
-  let lookup_typevar name (e : env) : row_constraint option =
-    match List.Assoc.find e ~equal name with
-    | Some (TypeVarBind r) -> Some r
-    | _ -> None
+    | Some b -> b
+    | None -> raise (undefined_error "type" name)
 
   (* Get the type of a typed expression. *)
   let typ (texp : texp) : ty =
@@ -218,11 +204,6 @@ module Seven() = struct
     | NoRow -> ()
     | OpenRow flds | ClosedRow flds -> List.iter flds ~f
 
-  (* Union two row constraints from a single unbound type variable's
-    perspective. Open rows merge by collecting fields and unifying any
-    overlap. An open row unified with a closed row must be a subset of
-    the closed row (the result is closed). Closed-with-closed requires
-    exact-set equality. Otherwise the rows are incompatible. *)
   let rec union_rows env (row_a: row_constraint) (row_b: row_constraint) : row_constraint =
     match (row_a, row_b) with
     | NoRow, row | row, NoRow -> row
@@ -243,11 +224,8 @@ module Seven() = struct
   and fld_exists env (rcd: record_ty) id ty =
     List.exists rcd ~f:(fun (f,t) -> String.equal f id && (unify env t ty; true))
 
-  (* Occurs check: check if a type variable occurs in a type. If it does,
-    raise an exception. While walking the type we also lower the scope of
-    any unbound tvar we visit to the minimum of src's and its own scope —
-    this is what keeps generalization sound when a tvar from a deeper scope
-    is unified into a shallower one. *)
+  (* Occurs check: check if a type variable occurs in a type. If it does, raise
+    an exception. *)
   and occurs (src : tv ref) (ty : ty) : unit =
     (* Follow all the links. If we see a type variable, it will only be
        Unbound. *)
@@ -269,11 +247,7 @@ module Seven() = struct
       occurs src dst;
     | _ -> ()
 
-  (* Check that a tvar's accumulated row constraint is satisfied by a
-    rigid's row. Rigid rows are opaque — they may not be widened — so the
-    rule is strict subset: every field tv requires must appear (and unify)
-    in the rigid's row. A `ClosedRow` on the tvar means the tvar IS a
-    specific record type, which can't masquerade as an opaque rigid. *)
+  (* Check that tv_row's fields are contained within rigid_row. *)
   and check_rigid_subset env tv_row rigid_row =
     match tv_row, rigid_row with
     | NoRow, _ -> ()
@@ -301,17 +275,10 @@ module Seven() = struct
       let Unbound(_, tv_row, src_scope) = !tv in
       (match ty with
       | TyName tname ->
-        (* `TyName "X"` can be either a rigid (an annotation's type
-          parameter currently in scope) or a nominal tycon. Try the rigid
-          path first: a rigid allows the tvar's row to be a subset, but
-          never widens it. If the name isn't a rigid, fall back to the
-          tycon path, treating the tycon's fields as a closed row. *)
-        (match lookup_typevar tname env with
-         | Some rigid_row ->
-           check_rigid_subset env tv_row rigid_row
-         | None ->
-           let tc = lookup_tycon tname env in
-           ignore (union_rows env tv_row (ClosedRow tc.ty)))
+        (match lookup_binding tname env with
+         | TypeVarBind rigid_row -> check_rigid_subset env tv_row rigid_row
+         | TypeBind tc -> ignore (union_rows env tv_row (ClosedRow tc.ty))
+         | VarBind _ -> raise (undefined_error "type" tname))
       | TyVar other when tv != other ->
         (* Union the rows of these two distinct type variables, and lower
           the surviving tvar's scope to the minimum. *)
@@ -320,14 +287,13 @@ module Seven() = struct
         let min_scope = min src_scope other_scope in
         let row = union_rows env tv_row other_row in
         other := Unbound(id, row, min_scope)
-      | _ when not (equal tv_row NoRow) ->
-        (* The tvar carries a row constraint but the other side is not a
-          record-like type — no possible unification. *)
-        raise (unify_failed t1 t2)
-      | _ ->
+      | _ when equal tv_row NoRow ->
         (* If either type is a type variable, ensure that the type variable
           does not occur in the type. occurs also lowers scopes. *)
-        occurs tv ty);
+        occurs tv ty
+      | _ ->
+        (* ty is not record-like. Can't unify with a row. *)
+        raise (unify_failed t1 t2));
       (* Link the type variable to the type. *)
       tv := Link ty
     | TyName a, TyName b when equal a b -> () (* The type names are the same. *)
@@ -340,12 +306,6 @@ module Seven() = struct
     trivial generic type (no quantified parameters). *)
   let dont_generalize ty : generic_ty = { type_params = []; ty }
 
-  (* Generalize a type by finding every unbound tvar whose scope is strictly
-    deeper than the current scope and turning it into a quantified type
-    parameter. Row constraints on those tvars become row constraints on the
-    corresponding parameter; field types inside those rows are themselves
-    recursively generalized, so e.g. `?r{value: ?v}` becomes a generic with
-    `?r::{value: ?v, ...}, ?v::NoRow` as the parameters. *)
   let gen (ty: ty) : generic_ty =
     let type_params : (id, row_constraint) Hashtbl.t = Hashtbl.create (module String) in
     let rec gen' ty =
@@ -353,7 +313,7 @@ module Seven() = struct
       | TyVar ({ contents = Unbound (id, row, scope) } as tv) when scope > !current_scope ->
         Hashtbl.set type_params ~key:id ~data:(gen_row row);
         (* Mutate the tvar to Link to its generalized TyName, so the
-          post-pass walking the AST doesn't flag it as still-unresolved. *)
+          post-pass walking the AST doesn't see it as Unbound. *)
         tv := Link (TyName id);
         TyName id
       | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
@@ -371,11 +331,9 @@ module Seven() = struct
     in
     { type_params; ty }
 
-  (* Instantiate a generic type by replacing each type parameter with a
-    fresh unbound tvar. Field types inside row constraints are substituted
-    through the same parameter->tvar map, so e.g. `forall a::{x: b, ...}, b.
-    a -> b` becomes `?n1{x: ?n2, ...} -> ?n2` with both occurrences of `b`
-    pointing at the same fresh tvar. *)
+  (* Instantiate a generic type by replacing all the type parameters
+   with fresh unbound type variables. Ensure that the same ID gets
+   mapped to the same unbound type variable by using an (id, ty) Hashtbl. *)
   let inst (gty: generic_ty) : ty =
     let tbl = Hashtbl.create (module String) in
     List.iter gty.type_params ~f:(fun (pid, _) ->
@@ -395,9 +353,7 @@ module Seven() = struct
       | OpenRow flds -> OpenRow (List.map flds ~f:(fun (id, ty) -> (id, inst' ty)))
       | ClosedRow flds -> ClosedRow (List.map flds ~f:(fun (id, ty) -> (id, inst' ty)))
     in
-    (* Now attach the (instantiated) row constraint to each fresh tvar.
-      We do this after the table is fully populated so rows that reference
-      other parameters resolve correctly. *)
+    (* Attach the instantiated row constraint to each fresh type variable in the table. *)
     List.iter gty.type_params ~f:(fun (pid, row) ->
       match row with
       | NoRow -> ()
@@ -409,13 +365,8 @@ module Seven() = struct
         | _ -> failwith "unreachable: tbl always holds TyVars");
     inst' gty.ty
 
-  (* Turn a generic_ty into its rigid form for *checking* an annotated
-    let's RHS. Each type parameter `'a` becomes a rigid `TyName "'a"` whose
-    row constraint lives in the environment as a `TypeVarBind`. The body
-    of the generic is returned untouched — its `TyName "'a"` references
-    are already the rigid names, and any nested annotation that mentions
-    `'a` will resolve through the env. Compare with [inst], which is used
-    at *use* sites and creates fresh tvars per use. *)
+  (* Turn a generic_ty into its rigid form, so that when annotations are instantiated,
+     they don't produce Unbound type variables that can unify with each other.*)
   let as_rigid (gty: generic_ty) : env * ty =
     let extras = List.map gty.type_params ~f:(fun (id, row) -> (id, TypeVarBind row)) in
     (extras, gty.ty)
@@ -472,16 +423,10 @@ module Seven() = struct
       (* Return the type of one of the branches. (we'll pick the "then" branch) *)
       TEIf (cond, thn, els, typ thn)
     | ERecord rec_lit ->
-      (* A record literal has a closed row: its set of fields is exactly the
-        ones written. We still represent the record as a tvar so it can later
-        unify with a tycon or with another row-constrained tvar. *)
       let rec_lit = List.map rec_lit ~f:(fun (id, x) -> (id, infer env x)) in
       let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
       TERecord (rec_lit, fresh_unbound_var ~row:(ClosedRow flds) ())
     | EWith (rcd, flds) ->
-      (* `{r with ...}` requires r to already have at least the new fields
-        present (with the new types). Model that as an open-row constraint
-        unified with r's type. *)
       let rcd = infer env rcd in
       let rec_lit = List.map flds ~f:(fun (id, x) -> (id, infer env x)) in
       let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
@@ -490,46 +435,25 @@ module Seven() = struct
       TEWith (rcd, rec_lit, typ rcd)
     | EProj (rcd, fld) ->
       let rcd = infer env rcd in
-      (* Force before matching: rcd's type may be a Link from earlier
-        unification, in which case neither the TyName nor the TyVar arm
-        would match without forcing. *)
       (match force (typ rcd) with
       | TyName tname ->
-        (* As in unify: a `TyName` may be a rigid (an annotation's type
-          parameter) or a nominal tycon. For the rigid path the field
-          lookup uses whatever row constraint the rigid carries; for the
-          tycon path it uses the tycon's record fields. A rigid with
-          `NoRow` has no field information, so projecting from it is a
-          type error. *)
         let (flds, name_for_err) =
-          match lookup_typevar tname env with
-          | Some (OpenRow flds | ClosedRow flds) -> (flds, tname)
-          | Some NoRow -> raise (expected_ty_error "record" tname)
-          | None ->
-            let tc = lookup_tycon tname env in
-            (tc.ty, tc.name)
+          match lookup_binding tname env with
+          | TypeVarBind (OpenRow flds | ClosedRow flds) -> (flds, tname)
+          | TypeVarBind NoRow -> raise (expected_ty_error "record" tname)
+          | TypeBind tc -> (tc.ty, tc.name)
+          | VarBind _ -> raise (undefined_error "type" tname)
         in
         (match List.Assoc.find flds ~equal fld with
         | Some ty -> TEProj (rcd, fld, ty)
         | _ -> raise (missing_field fld name_for_err))
       | TyVar ({ contents = Unbound(id, row, scope) } as tv) ->
-        (* The record type is still a tvar — add an open-row constraint that
-          says it must have at least the projected field with some fresh type. *)
         let fld_ty = fresh_unbound_var () in
         let row = union_rows env row (OpenRow [(fld, fld_ty)]) in
         tv := Unbound(id, row, scope);
         TEProj(rcd, fld, fld_ty)
       | ty -> raise (expected_ty_error "TyName or TyVar" (ty_kind ty)))
     | ELet ((id, ann, rhs), body) ->
-      (* Standard let-generalization, with two row-aware twists. First,
-        when an annotation is present, we turn it rigid: each declared
-        parameter `'a` becomes a rigid `TyName "'a"` exposed in the env
-        as a `TypeVarBind` carrying its row constraint. The RHS is then
-        checked against the annotation's body, with rigids unable to
-        unify with anything except themselves. Second, when no annotation
-        is given, we generalize the inferred type: any unbound tvar whose
-        scope is deeper than the surrounding scope becomes a quantified
-        parameter, carrying any row constraint it accumulated. *)
       enter_scope();
       let rhs =
         match ann with
@@ -554,10 +478,6 @@ module Seven() = struct
         match Hash_set.strict_add deduped_defs id with
         | Ok _ -> ()
         | Error _ -> raise (duplicate_definition id));
-      (* Prepare each decl: turn its annotation rigid (each declared
-        parameter becomes a rigid `TyName` plus a `TypeVarBind` entry
-        exposed to that decl's own RHS), or assign a fresh unbound tvar
-        if there's no annotation. *)
       let prepared = List.map decls ~f:(fun (id, ann, rhs) ->
         match ann with
         | Some ann ->
@@ -566,22 +486,15 @@ module Seven() = struct
         | None ->
           (id, None, rhs, [], fresh_unbound_var ()))
       in
-      (* Mutually-recursive value bindings: every decl's check_ty is in
-        scope for every decl's RHS, so recursive references typecheck. *)
       let env_decls = List.map prepared ~f:(fun (id, _, _, _, check_ty) ->
         (id, VarBind (dont_generalize check_ty)))
       in
       let env_with_decls = env_decls @ env in
-      (* Each RHS sees its own typevars on top of the shared value bindings.
-        Distinct decls don't share each other's typevars. *)
       let tdecls : tlet_decl list = List.map prepared ~f:(fun (id, ann, rhs, tv_env, check_ty) ->
         let trhs = check (tv_env @ env_with_decls) check_ty rhs in
         (id, ann, trhs))
       in
       leave_scope();
-      (* For each decl, the published type is either the user's annotation
-        (already resolved against outer typevars) or the generalized
-        inferred type. *)
       let generalized_bindings = List.map tdecls ~f:(fun (id, ann, rhs) ->
         let ty_gen =
           match ann with
@@ -594,10 +507,7 @@ module Seven() = struct
       let body = infer env_body body in
       TELetRec (tdecls, body, typ body)
 
-  (* Post-pass: reject any Unbound type variable surviving in the typed AST.
-    Generalized tvars are linked away by `gen`, so what's left as Unbound
-    is either an anonymous record literal that never got linked to a tycon,
-    or an instantiation that wasn't pinned by its surrounding context. *)
+  (* Walk the typed AST to check for any Unbound type variables, and if found, raise an exception. *)
   let check_no_unbound (texp : texp) : unit =
     let rec ck_ty (ty : ty) : unit =
       match force ty with
@@ -783,10 +693,6 @@ let%test "let_gen_scope_error" =
     (fun () -> typecheck_prog prog)
     (UnificationFailure "failed to unify type bool with bool -> ?2")
 
-(* Row-polymorphic generalization: `let f r = r.x` should give f a forall
-  with an open-row constraint on its parameter type. We exercise that by
-  applying f to two records of *different* nominal tycons in sequence,
-  each with its own `x` field type — f instantiates freshly per use. *)
 let%test "let_gen_row" =
   let open Seven() in
   let prog = (
@@ -802,8 +708,6 @@ let%test "let_gen_row" =
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool -> bool"
 
-(* TypeVarBind for let: a nested annotation mentioning 'a from an outer
-  annotated let resolves to the outer let's tvar. *)
 let%test "let_typevar_ref" =
   let open Seven() in
   let prog = ([],
@@ -815,8 +719,6 @@ let%test "let_typevar_ref" =
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool"
 
-(* TypeVarBind for let rec: same idea, but the typevars are introduced by
-  a recursive decl's annotation and used by that decl's own RHS. *)
 let%test "let_rec_typevar_ref" =
   let open Seven() in
   let prog = ([],
@@ -829,9 +731,6 @@ let%test "let_rec_typevar_ref" =
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool"
 
-(* Rigid identity: `forall 'a. 'a -> 'a = fun x -> x` should pass.
-  The parameter ?p unifies with rigid 'a (NoRow, OK), then the body's
-  return type is forced to 'a too, which matches. *)
 let%test "let_rigid_ok" =
   let open Seven() in
   let prog = ([],
@@ -843,9 +742,6 @@ let%test "let_rigid_ok" =
   let x = typecheck_prog prog in
   Poly.equal (ty_pretty (typ x)) "bool"
 
-(* Rigid rejection: `forall 'a, 'b. 'a -> 'b = fun x -> x` should fail.
-  After unifying ?p with 'a, the second unify of ?p with 'b forces 'a
-  and 'b to be the same TyName, which they aren't. *)
 let%test "let_rigid_error" =
   let open Seven() in
   let prog = ([],
@@ -859,8 +755,6 @@ let%test "let_rigid_error" =
     (fun () -> typecheck_prog prog)
     (TypeError "expression does not have type 'a -> 'b")
 
-(* Same rejection works inside `letrec`: each decl's annotation is
-  turned rigid, with rigid names exposed only to that decl's own RHS. *)
 let%test "let_rec_rigid_error" =
   let open Seven() in
   let prog = ([],

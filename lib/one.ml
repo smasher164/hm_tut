@@ -158,10 +158,7 @@ module One() = struct
       (* Return the result type. *)
       TEApp (fn, arg, ty_res)
   
-  (* Post-pass: walk the typed AST and reject any unresolved (Unbound) type
-    variable. After typechecking finishes, every embedded type should
-    have been pinned to a concrete shape by unification; a surviving
-    Unbound means the program had a type the system couldn't determine. *)
+  (* Walk the typed AST to check for any Unbound type variables, and if found, raise an exception. *)
   let check_no_unbound (texp : texp) : unit =
     let rec ck_ty (ty : ty) : unit =
       match force ty with

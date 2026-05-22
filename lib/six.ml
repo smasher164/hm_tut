@@ -37,10 +37,7 @@ module Six() = struct
   type bind =
     | VarBind of generic_ty (* A variable binding maps to a generic type. *)
     | TypeBind of tycon (* A type binding maps to a type constructor. *)
-    | TypeVarBind
-      (* Rigid type-variable marker. The binding's name is the rigid
-        `TyName "'a"`. With no row information attached, only NoRow tvars
-        can unify with a rigid. *)
+    | TypeVarBind (* A type variable binding marks some rigid type. *)
   type env = (id * bind) list
   type exp =
     | EBool of bool (* true/false *)
@@ -269,15 +266,11 @@ module Six() = struct
       let Unbound(_, tv_row, src_scope) = !tv in
       (match ty with
       | TyName tname ->
-        (* `TyName "X"` can be a rigid (an annotation's type parameter
-          currently in scope) or a tycon. A rigid carries no row information
-          in this chapter, so only a NoRow tvar can link to it; a row-
-          constrained tvar requires row polymorphism on the rigid, which we
-          don't have yet. For a tycon we treat the fields as a closed row,
-          same as the row-aware unification from five.ml. *)
         if is_typevar tname env then
           (match tv_row with
-           | NoRow -> ()  (* link will happen after the match, via tv := Link ty *)
+           | NoRow -> ()
+             (* We are only considering type variables without row constraints right now.
+                Link will happen after the match, via tv := Link ty *)
            | _ -> raise (unify_failed t1 t2))
         else
           let tc = lookup_tycon tname env in
@@ -310,11 +303,6 @@ module Six() = struct
     trivial generic type (no quantified parameters). *)
   let dont_generalize ty : generic_ty = { type_params = []; ty }
 
-  (* Generalize a type. Without row polymorphism, only tvars whose row is
-    `NoRow` can become type parameters. A tvar that has accumulated a row
-    constraint (e.g. from `r.x`) is *left as a tvar in the body* — it
-    didn't get generalized, so future uses of this binding share it,
-    making the function effectively monomorphic in that record shape. *)
   let gen (ty: ty) : generic_ty =
     let type_params = Hash_set.create (module String) in
     let rec gen' ty =
@@ -322,7 +310,7 @@ module Six() = struct
       | TyVar ({ contents = Unbound (id, NoRow, scope) } as tv) when scope > !current_scope ->
         Hash_set.add type_params id;
         (* Mutate the tvar to Link to its generalized TyName, so the
-          post-pass walking the AST doesn't flag it as still-unresolved. *)
+          post-pass walking the AST doesn't see it as Unbound. *)
         tv := Link (TyName id);
         TyName id
       | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
@@ -332,10 +320,9 @@ module Six() = struct
     let type_params = Hash_set.to_list type_params |> List.sort ~compare in
     { type_params; ty }
 
-  (* Instantiate (for *use* sites). Each type parameter gets a fresh
-    unbound tvar; `TyName` references that match a parameter are
-    rewritten to that tvar. No row substitution — type parameters
-    don't carry rows in this chapter. *)
+  (* Instantiate a generic type by replacing all the type parameters
+   with fresh unbound type variables. Ensure that the same ID gets
+   mapped to the same unbound type variable by using an (id, ty) Hashtbl. *)
   let inst (gty: generic_ty) : ty =
     let tbl = Hashtbl.create (module String) in
     List.iter gty.type_params ~f:(fun pid ->
@@ -351,9 +338,8 @@ module Six() = struct
     in
     if Hashtbl.is_empty tbl then gty.ty else inst' gty.ty
 
-  (* Turn a generic_ty into its rigid form for *check* sites. Each declared
-    `'a` becomes a rigid `TyName "'a"` exposed as a marker in the env. No
-    row constraints flow through the rigid (the next chapter adds that). *)
+  (* Turn a generic_ty into its rigid form, so that when annotations are instantiated,
+     they don't produce Unbound type variables that can unify with each other.*)
   let as_rigid (gty: generic_ty) : env * ty =
     let extras = List.map gty.type_params ~f:(fun id -> (id, TypeVarBind)) in
     (extras, gty.ty)
@@ -409,9 +395,6 @@ module Six() = struct
       (* Return the type of one of the branches. (we'll pick the "then" branch) *)
       TEIf (cond, thn, els, typ thn)
     | ERecord rec_lit ->
-      (* Anonymous record literal: closed row carrying the literal's fields.
-        Inferred as a fresh tvar so it can later unify with a tycon or
-        another row-constrained tvar. *)
       let rec_lit = List.map rec_lit ~f:(fun (id, x) -> (id, infer env x)) in
       let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
       TERecord (rec_lit, fresh_unbound_var ~row:(ClosedRow flds) ())
@@ -426,9 +409,7 @@ module Six() = struct
       let rcd = infer env rcd in
       (match force (typ rcd) with
       | TyName tname ->
-        (* Rigid `TyName` (an annotation's type parameter) is opaque
-          without row polymorphism, so projection is rejected. Concrete
-          tycon names look up the tycon's record fields. *)
+        (* Since we don't handle row polymorphism, we can't project a field off this type. *)
         if is_typevar tname env then
           raise (expected_ty_error "record" tname);
         let tc = lookup_tycon tname env in
@@ -495,7 +476,7 @@ module Six() = struct
       let body = infer env_body body in
       TELetRec (tdecls, body, typ body)
 
-  (* Post-pass: reject any Unbound type variable surviving in the typed AST. *)
+  (* Walk the typed AST to check for any Unbound type variables, and if found, raise an exception. *)
   let check_no_unbound (texp : texp) : unit =
     let rec ck_ty (ty : ty) : unit =
       match force ty with
@@ -740,10 +721,6 @@ let%test "let_rec_rigid_error" =
     (fun () -> typecheck_prog prog)
     (TypeError "expression does not have type 'a -> 'b")
 
-(* The defining limit: row constraints don't flow through let-generalization.
-  `let f = fun r -> r.x` leaves r's row-constrained tvar in the body
-  un-generalized, so the first use pins f's parameter to one tycon, and
-  a second use against a different tycon then fails. *)
 let%test "let_gen_row_monomorphism" =
   let open Six() in
   let prog = (
@@ -761,9 +738,6 @@ let%test "let_gen_row_monomorphism" =
     (fun () -> typecheck_prog prog)
     (UnificationFailure "failed to unify type bool with ?1")
 
-(* A row-polymorphic function can't be annotated either: the rigid `'a`
-  has no row, and a row-constrained tvar can't link to a rigid. This is
-  the row-poly story the next chapter unlocks. *)
 let%test "ann_row_poly_error" =
   let open Six() in
   let prog = ([],
