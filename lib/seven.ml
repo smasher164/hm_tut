@@ -735,3 +735,28 @@ let%test "let_rec_rigid_error" =
     (fun () -> typecheck_source
       "let rec f : forall 'a 'b. 'a -> 'b = fun x -> x in f")
     (TypeError "expression does not have type 'a -> 'b")
+
+let%test "row_ann" =
+  let open Seven() in
+  let x = typecheck_source {|
+    type Foo = { x : bool, y : bool }
+    let get_x : forall 'r. 'r :: { x : bool, ... } => 'r -> bool =
+      fun r -> r.x
+    in
+    let foo : Foo = { x = true, y = false } in
+    get_x foo
+  |} in
+  Poly.equal (ty_pretty (typ x)) "bool"
+
+let%test "row_ann_missing_field" =
+  let open Seven() in
+  assert_raises
+    (fun () -> typecheck_source {|
+      type Foo = { y : bool }
+      let get_x : forall 'r. 'r :: { x : bool, ... } => 'r -> bool =
+        fun r -> r.x
+      in
+      let foo : Foo = { y = true } in
+      get_x foo
+    |})
+    (RowMismatch "{x: bool, ...} and {y: bool}")
