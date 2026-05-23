@@ -1,0 +1,14 @@
+(version dev)
+
+(build
+ (all_platforms ((dune))))
+
+(depends
+ (all_platforms
+  (ocaml menhir sexplib0 ppx_sexp_conv ppx_inline_test)))
+
+(source
+ (fetch
+  (url git+https://github.com/smasher164/mini-ml-parser.git)))
+
+(dev)

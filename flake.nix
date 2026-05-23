@@ -22,7 +22,6 @@
             utop
             findlib
             ppx_inline_test
-            ocamlformat
             base
           ];
         };
