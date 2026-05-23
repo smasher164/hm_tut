@@ -287,9 +287,10 @@ module Nine() = struct
     | _ -> ()
 
   (* Check that tv_row's fields are contained within rigid_row. *)
-  and check_rigid_subset env tv_row rigid_row =
+  and check_rigid_subset env tname tv_row rigid_row =
     match tv_row, rigid_row with
     | NoRow, _ -> ()
+    | _, NoRow -> raise (expected_ty_error "record" tname)
     | OpenRow flds, OpenRow rigid_flds
     | OpenRow flds, ClosedRow rigid_flds ->
       List.iter flds ~f:(fun (id, ty) ->
@@ -315,7 +316,7 @@ module Nine() = struct
       (match ty with
       | TyName tname ->
         (match lookup_binding tname env with
-         | TypeVarBind rigid_row -> check_rigid_subset env tv_row rigid_row
+         | TypeVarBind rigid_row -> check_rigid_subset env tname tv_row rigid_row
          | TypeBind tc when List.is_empty tc.type_params ->
            ignore (union_rows env tv_row (ClosedRow tc.ty))
          | TypeBind _ -> raise (unify_failed t1 t2)
@@ -663,6 +664,46 @@ let%test "record_via_unparameterized_tycon" =
   |} in
   Poly.equal (ty_pretty (typ x)) "bool"
 
+let%test "row" =
+  let open Nine() in
+  let x = typecheck_source {|
+    type Foo = { y : bool -> bool }
+    let r : Foo = { y = fun x -> x } in (fun s -> s.y) r true
+  |} in
+  Poly.equal (ty_pretty (typ x)) "bool"
+
+let%test "row2" =
+  let open Nine() in
+  let x = typecheck_source {|
+    type Foo = { f : bool -> bool }
+    type Bar = { x : bool }
+    let r1 : Bar = { x = true } in
+    let r2 : Foo = { f = fun x -> x } in
+    (fun a -> fun b -> b.f a.x) r1 r2
+  |} in
+  Poly.equal (ty_pretty (typ x)) "bool"
+
+let%test "row_if" =
+  let open Nine() in
+  assert_raises
+    (fun () -> typecheck_source {|
+      type Foo = { x : bool }
+      type Bar = { x : bool, y : bool }
+      let foo : Foo = { x = true } in
+      let bar : Bar = { x = true, y = true } in
+      if true then foo else bar
+    |})
+    (UnificationFailure "failed to unify type Foo with Bar")
+
+let%test "row_with" =
+  let open Nine() in
+  assert_raises
+    (fun () -> typecheck_source {|
+      type Foo = { x : bool }
+      let foo : Foo = { x = true } in { foo with y = true }
+    |})
+    (RowMismatch "{y: bool, ...} and {x: bool}")
+
 let%test "let" =
   let open Nine() in
   let x = typecheck_source {|
@@ -808,6 +849,13 @@ let%test "row_ann_missing_field" =
       get_x foo
     |})
     (RowMismatch "{x: bool, ...} and {y: bool}")
+
+let%test "ann_row_poly_error" =
+  let open Nine() in
+  assert_raises
+    (fun () -> typecheck_source
+      "let f : forall 'a. 'a -> bool = fun r -> r.x in true")
+    (Expected "expected type record, got 'a")
 
 let%test "let_gen_row" =
   let open Nine() in

@@ -264,7 +264,7 @@ module Six() = struct
               Link will happen after the match, via tv := Link ty *)
            (match tv_row with
             | NoRow -> ()
-            | _ -> raise (unify_failed t1 t2))
+            | _ -> raise (expected_ty_error "record" tname))
          | TypeBind tc -> ignore (union_rows env tv_row (ClosedRow tc.ty))
          | VarBind _ -> raise (undefined_error "type" tname))
       | TyVar other when tv != other ->
@@ -573,6 +573,46 @@ let%test "record" =
   |} in
   Poly.equal (ty_pretty (typ x)) "bool"
 
+let%test "row" =
+  let open Six() in
+  let x = typecheck_source {|
+    type Foo = { y : bool -> bool }
+    let r : Foo = { y = fun x -> x } in (fun s -> s.y) r true
+  |} in
+  Poly.equal (ty_pretty (typ x)) "bool"
+
+let%test "row2" =
+  let open Six() in
+  let x = typecheck_source {|
+    type Foo = { f : bool -> bool }
+    type Bar = { x : bool }
+    let r1 : Bar = { x = true } in
+    let r2 : Foo = { f = fun x -> x } in
+    (fun a -> fun b -> b.f a.x) r1 r2
+  |} in
+  Poly.equal (ty_pretty (typ x)) "bool"
+
+let%test "row_if" =
+  let open Six() in
+  assert_raises
+    (fun () -> typecheck_source {|
+      type Foo = { x : bool }
+      type Bar = { x : bool, y : bool }
+      let foo : Foo = { x = true } in
+      let bar : Bar = { x = true, y = true } in
+      if true then foo else bar
+    |})
+    (UnificationFailure "failed to unify type Foo with Bar")
+
+let%test "row_with" =
+  let open Six() in
+  assert_raises
+    (fun () -> typecheck_source {|
+      type Foo = { x : bool }
+      let foo : Foo = { x = true } in { foo with y = true }
+    |})
+    (RowMismatch "{y: bool, ...} and {x: bool}")
+
 let%test "let" =
   let open Six() in
   let x = typecheck_source {|
@@ -713,4 +753,4 @@ let%test "ann_row_poly_error" =
   assert_raises
     (fun () -> typecheck_source
       "let f : forall 'a. 'a -> bool = fun r -> r.x in true")
-    (TypeError "expression does not have type 'a -> bool")
+    (Expected "expected type record, got 'a")
