@@ -206,7 +206,7 @@ module Five() = struct
     (* Follow all the links. If we see a type variable, it will only be
        Unbound. *)
     match force ty with
-    | TyVar tgt when src == tgt -> raise OccursCheck
+    | TyVar tgt when phys_equal src tgt -> raise OccursCheck
     | TyVar { contents = Unbound(_, tgt_row) } ->
       row_iter tgt_row (fun (_, ty) -> occurs src ty)
     | TyArrow(from, dst) ->
@@ -234,7 +234,7 @@ module Five() = struct
       | TyName tname ->
         let tc = lookup_tycon tname env in
         ignore (union_rows env tv_row (ClosedRow tc.ty))
-      | TyVar other when tv != other ->
+      | TyVar other when not (phys_equal tv other) ->
         (* Union the rows of these two distinct type variables. *)
         let Unbound(id, other_row) = !other in
         row_iter other_row (fun (_, ty) -> occurs tv ty);

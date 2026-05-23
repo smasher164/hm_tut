@@ -224,7 +224,7 @@ module Six() = struct
     (* Follow all the links. If we see a type variable, it will only be
        Unbound. *)
     match force ty with
-    | TyVar tgt when src == tgt ->
+    | TyVar tgt when phys_equal src tgt ->
       (* src type variable occurs in ty. *)
       raise OccursCheck
     | TyVar ({ contents = Unbound (id, tgt_row, tgt_scope) } as tgt) ->
@@ -267,7 +267,7 @@ module Six() = struct
             | _ -> raise (expected_ty_error "record" tname))
          | TypeBind tc -> ignore (union_rows env tv_row (ClosedRow tc.ty))
          | VarBind _ -> raise (undefined_error "type" tname))
-      | TyVar other when tv != other ->
+      | TyVar other when not (phys_equal tv other) ->
         (* Union the rows of these two distinct type variables, and lower
           the surviving tvar's scope to the minimum. *)
         let Unbound(id, other_row, other_scope) = !other in

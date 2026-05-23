@@ -4,6 +4,12 @@
  (preprocess
   (pps ppx_inline_test))
  (public_name hm_tut))
+
+; Disable the partial-match warning. OCaml can't tell that
+; when we call force on a type variable, the Link variable
+; is no longer present. Rather than writing 2-3 helpers in
+; every module to suppress this case, we'll just disable
+; this warning globally.
 (env
   (dev
-    (flags (:standard -w -A))))
+    (flags (:standard -w -8))))

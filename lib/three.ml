@@ -107,7 +107,7 @@ module Three() = struct
     (* Follow all the links. If we see a type variable, it will only be
        Unbound. *)
     match force ty with
-    | TyVar tgt when src == tgt -> raise OccursCheck
+    | TyVar tgt when phys_equal src tgt -> raise OccursCheck
     | TyArrow(from, dst) ->
       (* Check that src occurs in the arrow type. *)
       occurs src from;
