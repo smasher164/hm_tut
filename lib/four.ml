@@ -396,109 +396,104 @@ module Four() = struct
 
   let typecheck_source src =
     src |> Parser.parse_string |> convert_prog |> typecheck_prog
-end
 
-let assert_raises f e =
-  try
-    ignore (f ());
-    false
-  with exn -> equal exn e
+  let expect_type ty src =
+    Poly.equal (ty_pretty (typ (typecheck_source src))) ty
+
+  let expect_raises exn src =
+    try ignore (typecheck_source src); false
+    with e -> equal e exn
+end
 
 let%test "basic" =
   let open Four() in
-  let x = typecheck_source "(fun x -> x) true" in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  expect_type "bool" "(fun x -> x) true"
 
 let%test "basic_error" =
   let open Four() in
-  assert_raises
-    (fun () -> typecheck_source "(fun f -> f true) true")
+  expect_raises
     (UnificationFailure "failed to unify type bool -> ?1 with bool")
+    "(fun f -> f true) true"
 
 let%test "if" =
   let open Four() in
-  let x = typecheck_source "if true then false else (fun x -> x) true" in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  expect_type "bool" "if true then false else (fun x -> x) true"
 
 let%test "if_error" =
   let open Four() in
-  assert_raises
-    (fun () -> typecheck_source "if true then false else fun x -> x")
+  expect_raises
     (UnificationFailure "failed to unify type bool with ?0 -> ?0")
+    "if true then false else fun x -> x"
 
 let%test "record" =
   let open Four() in
-  let x = typecheck_source {|
+  expect_type "bool" {|
     type Foo = { x : bool, y : bool -> bool }
     let foo : Foo = { x = true, y = fun x -> x } in foo.y true
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  |}
 
 let%test "row" =
   let open Four() in
-  let x = typecheck_source {|
+  expect_type "bool" {|
     type Foo = { y : bool -> bool }
     let r : Foo = { y = fun x -> x } in (fun s -> s.y) r true
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  |}
 
 let%test "row2" =
   let open Four() in
-  let x = typecheck_source {|
+  expect_type "bool" {|
     type Foo = { f : bool -> bool }
     type Bar = { x : bool }
     let r1 : Bar = { x = true } in
     let r2 : Foo = { f = fun x -> x } in
     (fun a -> fun b -> b.f a.x) r1 r2
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  |}
 
 let%test "row_if" =
   let open Four() in
-  assert_raises
-    (fun () -> typecheck_source {|
+  expect_raises
+    (UnificationFailure "failed to unify type Foo with Bar")
+    {|
       type Foo = { x : bool }
       type Bar = { x : bool, y : bool }
       let foo : Foo = { x = true } in
       let bar : Bar = { x = true, y = true } in
       if true then foo else bar
-    |})
-    (UnificationFailure "failed to unify type Foo with Bar")
+    |}
 
 let%test "row_with" =
   let open Four() in
-  assert_raises
-    (fun () -> typecheck_source {|
+  expect_raises
+    (RowMismatch "{y: bool, ...} and {x: bool}")
+    {|
       type Foo = { x : bool }
       let foo : Foo = { x = true } in { foo with y = true }
-    |})
-    (RowMismatch "{y: bool, ...} and {x: bool}")
+    |}
 
 let%test "let" =
   let open Four() in
-  let x = typecheck_source {|
+  expect_type "bool" {|
     type A = { x : bool }
     let r : A = { x = true } in r.x
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  |}
 
 let%test "let_nogen" =
   let open Four() in
-  assert_raises
-    (fun () -> typecheck_source {|
+  expect_raises
+    (UnificationFailure "failed to unify type Unit with bool")
+    {|
       type Unit = {}
       let u : Unit = {} in
       let f = fun x -> x in
       let _ = f u in
       f true
-    |})
-    (UnificationFailure "failed to unify type Unit with bool")
+    |}
 
 let%test "let_ann" =
   let open Four() in
-  assert_raises
-    (fun () -> typecheck_source {|
+  expect_raises
+    (TypeError "expression does not have type A")
+    {|
       type A = {}
       let x : A = true in x
-    |})
-    (TypeError "expression does not have type A")
+    |}

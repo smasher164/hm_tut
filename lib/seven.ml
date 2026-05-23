@@ -565,170 +565,160 @@ module Seven() = struct
 
   let typecheck_source src =
     src |> Parser.parse_string |> convert_prog |> typecheck_prog
-end
 
-let assert_raises f e =
-  try
-    ignore (f ());
-    false
-  with exn -> equal exn e
+  let expect_type ty src =
+    Poly.equal (ty_pretty (typ (typecheck_source src))) ty
+
+  let expect_raises exn src =
+    try ignore (typecheck_source src); false
+    with e -> equal e exn
+end
 
 let%test "basic" =
   let open Seven() in
-  let x = typecheck_source "(fun x -> x) true" in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  expect_type "bool" "(fun x -> x) true"
 
 let%test "basic_error" =
   let open Seven() in
-  assert_raises
-    (fun () -> typecheck_source "(fun f -> f true) true")
+  expect_raises
     (UnificationFailure "failed to unify type bool -> ?1 with bool")
+    "(fun f -> f true) true"
 
 let%test "if" =
   let open Seven() in
-  let x = typecheck_source "if true then false else (fun x -> x) true" in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  expect_type "bool" "if true then false else (fun x -> x) true"
 
 let%test "if_error" =
   let open Seven() in
-  assert_raises
-    (fun () -> typecheck_source "if true then false else fun x -> x")
+  expect_raises
     (UnificationFailure "failed to unify type bool with ?0 -> ?0")
+    "if true then false else fun x -> x"
 
 let%test "record" =
   let open Seven() in
-  let x = typecheck_source {|
+  expect_type "bool" {|
     type Foo = { x : bool, y : bool -> bool }
     let foo : Foo = { x = true, y = fun x -> x } in foo.y true
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  |}
 
 let%test "row" =
   let open Seven() in
-  let x = typecheck_source {|
+  expect_type "bool" {|
     type Foo = { y : bool -> bool }
     let r : Foo = { y = fun x -> x } in (fun s -> s.y) r true
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  |}
 
 let%test "row2" =
   let open Seven() in
-  let x = typecheck_source {|
+  expect_type "bool" {|
     type Foo = { f : bool -> bool }
     type Bar = { x : bool }
     let r1 : Bar = { x = true } in
     let r2 : Foo = { f = fun x -> x } in
     (fun a -> fun b -> b.f a.x) r1 r2
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  |}
 
 let%test "row_if" =
   let open Seven() in
-  assert_raises
-    (fun () -> typecheck_source {|
+  expect_raises
+    (UnificationFailure "failed to unify type Foo with Bar")
+    {|
       type Foo = { x : bool }
       type Bar = { x : bool, y : bool }
       let foo : Foo = { x = true } in
       let bar : Bar = { x = true, y = true } in
       if true then foo else bar
-    |})
-    (UnificationFailure "failed to unify type Foo with Bar")
+    |}
 
 let%test "row_with" =
   let open Seven() in
-  assert_raises
-    (fun () -> typecheck_source {|
+  expect_raises
+    (RowMismatch "{y: bool, ...} and {x: bool}")
+    {|
       type Foo = { x : bool }
       let foo : Foo = { x = true } in { foo with y = true }
-    |})
-    (RowMismatch "{y: bool, ...} and {x: bool}")
+    |}
 
 let%test "let" =
   let open Seven() in
-  let x = typecheck_source {|
+  expect_type "bool" {|
     type A = { x : bool }
     let r : A = { x = true } in r.x
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  |}
 
 let%test "let_ann" =
   let open Seven() in
-  assert_raises
-    (fun () -> typecheck_source {|
+  expect_raises
+    (TypeError "expression does not have type A")
+    {|
       type A = {}
       let x : A = true in x
-    |})
-    (TypeError "expression does not have type A")
+    |}
 
 let%test "let_rec" =
   let open Seven() in
-  let x = typecheck_source {|
+  expect_type "bool" {|
     let rec f = fun x -> if x then g x else x
     and g = fun x -> if x then f x else x in
     f true
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  |}
 
 let%test "let_rec_error" =
   let open Seven() in
-  assert_raises
-    (fun () -> typecheck_source {|
+  expect_raises
+    (UnificationFailure "failed to unify type A with bool")
+    {|
       type A = {}
       let rec f = fun x -> if x then g x else x
       and g : bool -> A = fun x -> if x then f x else let a : A = {} in a in
       f true
-    |})
-    (UnificationFailure "failed to unify type A with bool")
+    |}
 
 let%test "let_gen" =
   let open Seven() in
-  let x = typecheck_source {|
+  expect_type "bool" {|
     type A = {}
     let a : A = {} in
     let f = fun x -> x in
     let _ = f a in
     f true
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  |}
 
 let%test "fix" =
   let open Seven() in
-  let x = typecheck_source {|
+  expect_type "bool -> bool" {|
     let rec fix = fun f -> fun x -> f (fix f) x in
     fix (fun f -> fun arg -> if arg then f false else true)
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool -> bool"
+  |}
 
 let%test "let_gen_ann" =
   let open Seven() in
-  let x = typecheck_source {|
+  expect_type "bool" {|
     type A = {}
     let a : A = {} in
     let f : forall 'a. 'a -> bool = fun x -> true in
     f a
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  |}
 
 let%test "let_gen_error" =
   let open Seven() in
-  assert_raises
-    (fun () -> typecheck_source {|
+  expect_raises
+    (TypeError "expression does not have type 'a -> A")
+    {|
       type A = {}
       let f : forall 'a. 'a -> A = fun x -> true in
       f true
-    |})
-    (TypeError "expression does not have type 'a -> A")
+    |}
 
 let%test "let_gen_scope_error" =
   let open Seven() in
-  assert_raises
-    (fun () -> typecheck_source
-      "(fun x -> let y = x in y) true true")
+  expect_raises
     (UnificationFailure "failed to unify type bool with bool -> ?2")
+    "(fun x -> let y = x in y) true true"
 
 let%test "let_gen_row" =
   let open Seven() in
-  let x = typecheck_source {|
+  expect_type "bool -> bool" {|
     type Foo = { x : bool }
     type Bar = { x : bool -> bool }
     let f = fun r -> r.x in
@@ -736,75 +726,67 @@ let%test "let_gen_row" =
     let r2 : Bar = { x = fun y -> y } in
     let _ = f r1 in
     f r2
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool -> bool"
+  |}
 
 let%test "let_typevar_ref" =
   let open Seven() in
-  let x = typecheck_source {|
+  expect_type "bool" {|
     let f : forall 'a. 'a -> 'a = fun x -> let y : 'a = x in y in
     f true
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  |}
 
 let%test "let_rec_typevar_ref" =
   let open Seven() in
-  let x = typecheck_source {|
+  expect_type "bool" {|
     let rec f : forall 'a. 'a -> 'a = fun x -> let y : 'a = x in y in
     f true
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  |}
 
 let%test "let_rigid_ok" =
   let open Seven() in
-  let x = typecheck_source {|
+  expect_type "bool" {|
     let f : forall 'a. 'a -> 'a = fun x -> x in
     f true
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  |}
 
 let%test "let_rigid_error" =
   let open Seven() in
-  assert_raises
-    (fun () -> typecheck_source
-      "let f : forall 'a 'b. 'a -> 'b = fun x -> x in f")
+  expect_raises
     (TypeError "expression does not have type 'a -> 'b")
+    "let f : forall 'a 'b. 'a -> 'b = fun x -> x in f"
 
 let%test "let_rec_rigid_error" =
   let open Seven() in
-  assert_raises
-    (fun () -> typecheck_source
-      "let rec f : forall 'a 'b. 'a -> 'b = fun x -> x in f")
+  expect_raises
     (TypeError "expression does not have type 'a -> 'b")
+    "let rec f : forall 'a 'b. 'a -> 'b = fun x -> x in f"
 
 let%test "row_ann" =
   let open Seven() in
-  let x = typecheck_source {|
+  expect_type "bool" {|
     type Foo = { x : bool, y : bool }
     let get_x : forall 'r. 'r :: { x : bool, ... } => 'r -> bool =
       fun r -> r.x
     in
     let foo : Foo = { x = true, y = false } in
     get_x foo
-  |} in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  |}
 
 let%test "row_ann_missing_field" =
   let open Seven() in
-  assert_raises
-    (fun () -> typecheck_source {|
+  expect_raises
+    (RowMismatch "{x: bool, ...} and {y: bool}")
+    {|
       type Foo = { y : bool }
       let get_x : forall 'r. 'r :: { x : bool, ... } => 'r -> bool =
         fun r -> r.x
       in
       let foo : Foo = { y = true } in
       get_x foo
-    |})
-    (RowMismatch "{x: bool, ...} and {y: bool}")
+    |}
 
 let%test "ann_row_poly_error" =
   let open Seven() in
-  assert_raises
-    (fun () -> typecheck_source
-      "let f : forall 'a. 'a -> bool = fun r -> r.x in true")
+  expect_raises
     (Expected "expected type record, got 'a")
+    "let f : forall 'a. 'a -> bool = fun r -> r.x in true"

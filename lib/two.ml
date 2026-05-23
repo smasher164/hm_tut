@@ -208,32 +208,31 @@ module Two() = struct
 
   let typecheck_source src =
     src |> Parser.parse_string |> convert_prog |> typecheck_prog
-end
 
-let assert_raises f e =
-  try
-    ignore (f ());
-    false
-  with exn -> equal exn e
+  let expect_type ty src =
+    Poly.equal (ty_pretty (typ (typecheck_source src))) ty
+
+  let expect_raises exn src =
+    try ignore (typecheck_source src); false
+    with e -> equal e exn
+end
 
 let%test "basic" =
   let open Two() in
-  let x = typecheck_source "(fun x -> x) true" in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  expect_type "bool" "(fun x -> x) true"
 
 let%test "basic_error" =
   let open Two() in
-  assert_raises
-    (fun () -> typecheck_source "(fun f -> f true) true")
+  expect_raises
     (UnificationFailure "failed to unify type bool -> ?1 with bool")
+    "(fun f -> f true) true"
 
 let%test "if" =
   let open Two() in
-  let x = typecheck_source "if true then false else (fun x -> x) true" in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  expect_type "bool" "if true then false else (fun x -> x) true"
 
 let%test "if_error" =
   let open Two() in
-  assert_raises
-    (fun () -> typecheck_source "if true then false else fun x -> x")
+  expect_raises
     (UnificationFailure "failed to unify type bool with ?0 -> ?0")
+    "if true then false else fun x -> x"

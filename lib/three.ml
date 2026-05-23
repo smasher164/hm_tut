@@ -238,51 +238,47 @@ module Three() = struct
 
   let typecheck_source src =
     src |> Parser.parse_string |> convert_prog |> typecheck_prog
-end
 
-let assert_raises f e =
-  try
-    ignore (f ());
-    false
-  with exn -> equal exn e
+  let expect_type ty src =
+    Poly.equal (ty_pretty (typ (typecheck_source src))) ty
+
+  let expect_raises exn src =
+    try ignore (typecheck_source src); false
+    with e -> equal e exn
+end
 
 let%test "basic" =
   let open Three() in
-  let x = typecheck_source "(fun x -> x) true" in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  expect_type "bool" "(fun x -> x) true"
 
 let%test "basic_error" =
   let open Three() in
-  assert_raises
-    (fun () -> typecheck_source "(fun f -> f true) true")
+  expect_raises
     (UnificationFailure "failed to unify type bool -> ?1 with bool")
+    "(fun f -> f true) true"
 
 let%test "if" =
   let open Three() in
-  let x = typecheck_source "if true then false else (fun x -> x) true" in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  expect_type "bool" "if true then false else (fun x -> x) true"
 
 let%test "if_error" =
   let open Three() in
-  assert_raises
-    (fun () -> typecheck_source "if true then false else fun x -> x")
+  expect_raises
     (UnificationFailure "failed to unify type bool with ?0 -> ?0")
+    "if true then false else fun x -> x"
 
-(* A let binding gives a name to a value, then uses it inside a body. *)
 let%test "let" =
   let open Three() in
-  let x = typecheck_source "let x = true in if x then false else true" in
-  Poly.equal (ty_pretty (typ x)) "bool"
+  expect_type "bool" "let x = true in if x then false else true"
 
 let%test "let_ann" =
   let open Three() in
-  assert_raises
-    (fun () -> typecheck_source "let x : bool = fun y -> y in x")
+  expect_raises
     (TypeError "expression does not have type bool")
+    "let x : bool = fun y -> y in x"
 
 let%test "let_nogen" =
   let open Three() in
-  assert_raises
-    (fun () -> typecheck_source
-      "let f = fun x -> x in let _ = f true in f (fun y -> y)")
+  expect_raises
     (UnificationFailure "failed to unify type bool with ?2 -> ?2")
+    "let f = fun x -> x in let _ = f true in f (fun y -> y)"
