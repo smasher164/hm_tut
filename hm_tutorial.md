@@ -13,6 +13,7 @@ This post will cover
 We assume you understand
 - Abstract Syntax trees
 - Vaguely understand what a type system is.
+- Have some familiarity with reading OCaml.
 
 Type inference is the process of taking some expression that represents (part of) a program and returning its type.
 If the expression is invalid, i.e. it does some invalid operation according to the rules of your language (like adding a `bool` to a `string`), type inference will fail.
@@ -99,7 +100,7 @@ type exp =
     | EApp of exp * exp (* f arg *)
 ```
 
-`texp` represents a typed expression, a.k.a an expression that holds a `ty`. There's a number of ways a type-checker could choose to define this. You can simply return a type and keep around a map from exp |=> ty. You could parameterize the definition of `exp` so that it can be extended with more variants or fields. In our case, we're going to take a more straightforward approach of defining another typed AST that just duplicates all the variants of our untyped AST.
+`texp` represents a typed expression, a.k.a an expression that holds a `ty`. There's a number of ways a type-checker could choose to define this. You can simply return a type and keep around a map from `exp |=> ty`. You could parameterize the definition of `exp` so that it can be extended with more variants or fields. In our case, we're going to take a more straightforward approach of defining another typed AST that just duplicates all the variants of our untyped AST.
 
 ```ocaml
 type texp =
@@ -135,7 +136,7 @@ TEApp(TELam("x", TEVar("x", ?0), ?1), TEBool(true, ?2), ?3)
 
 where each `?` holds the type for that subexpression.
 
-How do we fill in those holes? To start off, let's try fill in the information we already know.
+How do we fill in those holes? To start off, let's try and fill in the information we already know.
 - The type of `EBool true` should be `TyBool`.
 - The return type of the lambda should be the same as its parameter's type, i.e. the type of `x`.
 - The parameter type of the lambda should be the same as the type of the lambda's argument, i.e. the type of `EBool true`.
@@ -512,8 +513,7 @@ where `unify_failed` is just a helper that constructs an exception that prints o
 ```ocaml
 let unify_failed t1 t2 =
   UnificationFailure
-    (Printf.sprintf "failed to unify type %s with %s" (ty_debug t1)
-        (ty_debug t2))
+    (Printf.sprintf "failed to unify type %s with %s" (ty_debug t1) (ty_debug t2))
 ```
 
 With that, unification is done and so is our implementation of type inference.
@@ -539,7 +539,7 @@ Output: `UnificationFailure "failed to unify type bool -> ?1 with bool"`
 
 # Simple extensions
 
-Let's extend our language with some simple extensions, namely `if` expressions for branching on a `bool`, nominal type declarations, `let` bindings with type annotations, and mutually recursive `let rec` bindings.
+Let's extend our language with some simple extensions, namely `if` expressions for branching on a `bool`, `let` bindings with type annotations, mutually recursive `let rec` bindings, and nominal type declarations.
 
 # If expressions
 
@@ -606,327 +606,6 @@ EIf(EBool true, EBool false, ELam("x", EVar "x"))
 ```
 Output: `UnificationFailure "failed to unify type bool with ?0 -> ?0"`
 
-# Type declarations
-
-An example type declaration in this language will be of the form
-```
-type Foo {
-    bar: bool
-    baz: bool -> bool
-}
-```
-It can be constructed and projected (selected from) as
-```
-Foo{bar = true, baz = fun x -> x}.baz
-```
-A declaration is *nominal*. So another type with the same fields like
-```
-type Qux {
-    bar: bool
-    baz: bool -> bool
-}
-```
-cannot be used in place of `Foo`. For example, this program won't type-check:
-```
-type Box {
-    foo: Foo
-}
-Box{foo = Qux{bar = true, baz = fun x -> x}} (* Type error: expected Foo, got Qux *)
-```
-Nominal types (or newtypes) are called that because you only need to compare their names to know they are different. And this is how our `unify` will treat them as well.
-
-So let's discuss the implementation of nominal types.
-To our expression language, we want to add an `ERecord` variant that constructs the record. It takes the type name and a list of (field,expression) pairs. We also want to add an `EProj` variant that accesses a field of the record with its corresponding name.
-```ocaml
-type exp =
-    ...
-    | ERecord of id * record_lit (* Foo{x = true, y = false} *)
-    | EProj of exp * id (* r.y *)
-
-and record_lit = (id * exp) list
-```
-Our `texp` is updated similarly.
-```ocaml
-type texp =
-    ...
-    | TERecord of id * tyrecord_lit * ty
-    | TEProj of texp * id * ty
-
-and tyrecord_lit = (id * texp) list
-```
-As expected, we also update the `typ` function to extract the `ty` field from a `TERecord` or `TEProj`.
-```ocaml
-let typ (texp : texp) : ty =
-  match texp with
-  ...
-  | TERecord (_, _, ty) -> ty
-  | TEProj (_, _, ty) -> ty
-```
-
-For our types, we need to add two variants--one called `TyRecord` for a record type with its name and all its fields, the other called `TyName` for an arbitrary type name. `TyRecord` will be used to compare field types as well as the type name. For example `Foo{x: bool}` and `Foo{x: bool, y: bool}` are two different types, and wouldn't unify. `TyName` is used for actually mentioning that type anywhere, such as an annotation.
-
-```ocaml
-type ty =
-    ...
-    | TyRecord of id * record_ty (* Record: Foo{x: Bool, y: Bool} *)
-    | TyName of id (* Type name: Foo *)
-
-and record_ty = (id * ty) list
-```
-
-We also need to add an AST node for the type declarations themselves. We'll modify our `prog` definition to include `tycon list`, which corresponds to type declarations at the top-level which will be accessible to the expressions in the program.
-
-```ocaml
-type prog = tycon list * exp
-```
-
-As for the definition of `tycon`
-```ocaml
-(* Type declaration/constructor. All type declarations are nominal records. *)
-type tycon = {
-    name : id;
-    ty : record_ty;
-}
-```
-Those `tycon`s are made available through the `env`ironment, which the type-checker queries. We need to add another variant to `bind` to support types.
-```ocaml
-type bind =
-    ...
-    | TypeBind of tycon (* A type binding maps to a type constructor. *)
-```
-
-We can go ahead an declare the `lookup_tycon` helper that (similar to `lookup_var_type`) will search the `env` for a `TypeBind` with a name.
-```ocaml
-(* Lookup a type constructor in the environment. *)
-let lookup_tycon name (e : env) : tycon =
-  match List.Assoc.find e ~equal name with
-  | Some (TypeBind t) -> t
-  | _ -> raise (undefined_error "type" name)
-```
-
-With that, we can now proceed with the type inference portion.
-Let's start by discussing changes to the unification algorithm.
-
-`TyName` is an easy one. If two `TyName`s have the same name, they unify.
-```ocaml
-| TyName a, TyName b when equal a b -> () (* The type names are the same. *)
-```
-
-Great. `TyRecord` is a bit more tedious. Given two record types, for them to unify, we need them to have
-- The same type name.
-- The same number of fields.
-- The same field names.
-- The same field types.
-
-We can start off by guarding the match with a comparison of their type names and the length of the fields.
-```ocaml
-| TyRecord (id1, fds1), TyRecord (id2, fds2)
-    when equal id1 id2 && equal (List.length fds1) (List.length fds2) ->
-    ...
-```
-Then we should zip over the fields and unify them. Let's create a helper that unifies two fields.
-```ocaml
-let unify_fld (id1, ty1) (id2, ty2) =
-    if not (equal id1 id2) then raise (unify_failed ty1 ty2)
-    else unify env ty1 ty2
-in
-```
-We can use it with `iter2_exn` which is just an ugly name for `zip`.
-```ocaml
-List.iter2_exn ~f:unify_fld fds1 fds2
-```
-
-Overall, the `TyRecord` case looks like this
-```ocaml
-| TyRecord (id1, fds1), TyRecord (id2, fds2)
-    when equal id1 id2 && equal (List.length fds1) (List.length fds2) ->
-    (* Both types are records with the same name and number of fields. *)
-    let unify_fld (id1, ty1) (id2, ty2) =
-        if not (equal id1 id2) then raise (unify_failed ty1 ty2)
-        else unify ty1 ty2
-    in
-    (* Unify their corresponding fields. *)
-    List.iter2_exn ~f:unify_fld fds1 fds2
-```
-
-We also need to update the `occurs` check to iterate over the types of the fields in a record and check that the `src` type variable does not occur in them.
-```ocaml
-| TyRecord (_, flds) ->
-    (* Check that src occurs in the field types. *)
-    List.iter flds ~f:(fun (_, ty) -> occurs src ty)
-```
-
-Okay so now that `unify` and `occurs` have been updated, when `infer` calls `unify` on `TyName`s or `TyRecord`s, it will just work.
-Now let's update `infer`. We'll start with `ERecord`.
-
-```ocaml
-| ERecord (tname, rec_lit) ->
-    ...
-```
-
-Given a record literal, we need to look up its corresponding type constructor using `tname`.
-```ocaml
-let tc = lookup_tycon tname env in
-```
-The type we want to ultimately return is just `TyName tname`. Why not just return `TyRecord`? Well remember that the purpose of nominal types is to be able to compare them by name. Moreover, any of the cases in `infer` can return a type for a record. We need some canonical representation of that type so that we don't end up mixing `TyRecord` and `TyName` during `unify`.
-
-Anyways, before we return `TyName`, we need to turn this type declaration into a `TyRecord`, so we can actually make sure that the record literal the user constructed matches the record type.
-```ocaml
-let ty_dec = TyRecord(tc.name, tc.ty) in
-```
-Of course, we can do this with unification. However, what do we unify?
-Given the record literal, we should infer a record type from it, and `unify` *that* with the declared type.
-We can just iterate over each field and infer its type, synthesizing a `TyRecord` for the whole literal.
-```ocaml
-let rec_lit = List.map ~f:(fun (id, x) -> (id, infer env x)) rec_lit in
-let ty_rec =
-    TyRecord (tname, List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit)
-in
-```
-If you're wondering, "why not just call `typ` on the result of `infer` when we first map over the fields?" it's because the `texp` we need to return at the end of inference needs to have the `texp`s for all the fields as well, so we need to keep `rec_lit` around.
-
-Now we can just unify `ty_rec` (the inferred record type) with `ty_dec` (the declared record type).
-```ocaml
-unify env ty_dec ty_rec;
-```
-Let's observe, for a moment, that this call to `unify` is comparing an inferred type with a declared type. This pattern will come up again and again in our type-checker. There is a desired type in this scenario, but when `unify` fails, the error message will just be a `UnificationFailure` indicating that they are not the same. Ideally, we show an error message like `"Foo{x = true, y = false} does not have type Foo{x: bool}`, indicating that the record literal does not meet the requirements of the declaration.
-
-To amend this, let's introduce a `check` function that will internally call `unify`, but when it fails, will produce a proper error message. On success, it will return a `texp` (typed expression). We handle `ERecord` as a special case, since this is the helper that `infer` will call to iterate over the record's fields.
-
-```ocaml
-let check env ty exp =
-    match exp with
-    | ERecord (tname, rec_lit) ->
-        let rec_lit = List.map ~f:(fun (id, x) -> (id, infer env x)) rec_lit in
-        let ty_rec =
-            TyRecord (tname, List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit)
-        in
-        try
-            unify ty ty_rec;
-            TERecord(tname, rec_lit, ty_rec)
-        with UnificationFailure _ ->
-            raise (type_error exp ty)
-    | exp ->
-        let texp = infer env exp in
-        try
-            unify ty (typ texp);
-            texp
-        with UnificationFailure _ ->
-            raise (type_error exp ty)
-```
-
-
-With `check`, the logic above can be moved, and we can just call `check env ty_dec exp` and unpack the typed fields.
-
-After this part, we can just return the typed record literal.
-```ocaml
-TERecord (tname, rec_lit, TyName tname)
-```
-
-Here is the entire `ERecord` case.
-```ocaml
-| ERecord (tname, rec_lit) ->
-    (* Look up the declared type constructor for the type name on the record
-       literal. *)
-    let tc = lookup_tycon tname env in
-    (* Turn the type constructor into a concrete record type that we can unify. *)
-    let ty_dec = TyRecord(tc.name, tc.ty) in
-    (* Check that the record literal matches the declared record type,
-       and obtain all the typed fields. *)
-    let TERecord (_, rec_lit, _) = check env ty_dec exp in
-    (* Return the expression with the type as the type name. *)
-    TERecord (tname, rec_lit, TyName tname)
-```
-
-Note that this pattern of calling a `check` function that internally calls `infer` will come up again and again as long as we have some desired type we want to unify against, e.g. a type annotation. This is actually called *bidirectional type inference*, a fancy name for saying that our type-checker is split between `check` and `infer` which call each other.
-
-Aside: Here are the typing rules for record literals.
-```
-          T { l_1 : t_1, ..., l_n : t_n } ∈ Δ    Γ ⊢ e_1 : t_1, ..., Γ ⊢ e_n : t_n 
-T-Record:--------------------------------------------------------------------------
-                         Δ, Γ ⊢ T { l_1 = e_1, ..., l_n = e_n } : T                
-```
-
-Note there is another symbol here, `Δ`. `Δ` represents the part of our context containing `TypeBind`s. This rule basically says if there is a type declaration `T` in the type declaration context `Δ`, with the fields `l_1` through `l_n` whose types are `t_1` through `t_n`, and the expressions `e_1` through `e_n` have those respective types, then we can assume that a record constructed like `T { l_1 = e_1, ..., l_n = e_n }` has the type `T`. The `1 ... n` here is the same for the premises and the conclusion, so we are required to have the same number of fields with the same types.
-
-The next case in type inference is `EProj` for projecting onto a record field.
-```ocaml
-| EProj (rcd, fld) ->
-    ...
-```
-First, we want to infer the type of the expression denoted by `rcd`.
-```ocaml
-let rcd = infer env rcd in
-```
-We then need to check that it has the field we're trying to access. The inferred type should be a `TyName` corresponding to the record's type, so we should transform it accordingly.
-
-```ocaml
-let (tname, rec_ty) = 
-    match typ rcd with
-    | TyName tname ->
-        let tc = lookup_tycon tname env in
-        (tc.name, tc.ty)
-    | _ -> raise (expected_ty_error "TyName" (ty_kind ty))
-in
-```
-
-Now we just have to iterate over `rec_ty` to find `fld`. If we find it, we return that field's type.
-Otherwise, raise an error mentioning the field that is missing.
-```ocaml
-(match List.Assoc.find rec_ty ~equal fld with
-| Some ty -> TEProj (rcd, fld, ty)
-| _ -> raise (missing_field fld tname))
-```
-
-The overall logic for `EProj` looks like
-```ocaml
-| EProj (rcd, fld) ->
-    let rcd = infer env rcd in
-    let (tname, rec_ty) = 
-        match typ rcd with
-        | TyName tname ->
-            let tc = lookup_tycon tname env in
-            (tc.name, tc.ty)
-        | ty -> raise (expected_ty_error "TyName" (ty_kind ty))
-    in
-    (match List.Assoc.find rec_ty ~equal fld with
-    | Some ty -> TEProj (rcd, fld, ty)
-    | _ -> raise (missing_field fld tname))
-```
-
-Aside: The typing rules for record projection look like
-```
-        Γ ⊢ e : T    T { l_1 : t_1, ..., l_n : t_n } ∈ Δ 
-T-Proj:--------------------------------------------------
-                       Δ, Γ ⊢ e.l_j : t_j                
-```
-
-This basically says if under the context `Γ`, the expression `e` has type `T`, and `T` is some record type declared in the type declaration context `Δ`, then projecting on the record for one of those fields will return the corresponding field's type in the declaration.
-
-Great! Now that we have nominal record construction and projection implemented, let's test some examples.
-
-# Examples
-
-```ocaml
-(* type Foo = { x: Bool, y: fun Bool -> Bool }
-   Foo{x = true, y = fun x -> x}.y true *)
-(
-    [{name = "Foo"; ty = [("x", TyBool); ("y", TyArrow(TyBool, TyBool))] }],
-    EApp(EProj(ERecord("Foo", [("x", EBool true); ("y", ELam("x", EVar "x"))]), "y"), EBool true)
-)
-```
-Output: `bool`
-
-```ocaml
-(* type Foo = { x: Bool, y: fun Bool -> Bool }
-   Foo{y = false}.y *)
-(
-    [{name = "Foo"; ty = [("x", TyBool); ("y", TyArrow(TyBool, TyBool))] }],
-    EProj(ERecord("Foo", [("y", EBool false)]), "y")
-)
-```
-Output: `TypeError "expression does not have type Foo{x: bool, y: bool -> bool}"`
-
 # Let bindings
 
 A let binding is an expression like `let x = true in f x` or `let x : bool = true in f x`. Basically, it's a way of binding an identifier (with an optional annotation) to the result of evaluating some expression, and using that binding in the evaluation of another expression. Apart from the optional annotation, `let x = exp in body` is basically sugar for `(fun x -> body) exp`. However, since we want to handle type annotations, and set ourselves up for generalization later on, we will handle this case independently.
@@ -954,11 +633,19 @@ Let's look at type inference for our `ELet` case.
 | ELet ((id, ann, rhs), body) ->
     ...
 ```
-First, we want to `infer` the type of the right-hand-side of the binding. if there is a type annotation, we want to check that the inferred type unifies with the annotation.
+First, we want to `infer` the type of the right-hand-side of the binding. if there is a type annotation, we want to check that the inferred type unifies with the annotation. This pattern of comparing an inferred type with a declared type will come up again and again in our type-checker. We can extract it out into a helper called `check`.
 
-We can use the `check` helper we defined when inferring record types to provide a better error message in case the type of the right-hand-side doesn't match the annotation.
+```ocaml
+  let rec check env ty exp =
+    let texp = infer env exp in
+    (try
+        unify ty (typ texp);
+        texp
+    with UnificationFailure _ ->
+        raise (type_error ty))
+```
 
-Now we can match against the `ann`otation and `check` that `rhs` satisfies it.
+Now we can match against the annotation and `check` that `rhs` satisfies it.
 ```ocaml
 let rhs =
     match ann with
@@ -994,40 +681,16 @@ Now let's test it out!
 # Examples
 
 ```ocaml
-(* type A = { x: Bool }
-   let r = A{ x = true }
-   in r.x *)
-(
-    [{name = "A"; ty = [("x", TyBool)]}],
-    ELet(("r", None, ERecord("A", [("x", EBool true)])), EProj(EVar "r", "x"))
-)
+(* let x = true in if x then false else true *)
+ELet(("x", None, EBool true), EIf(EVar "x", EBool false, EBool true))
 ```
 Output: `bool`
 
 ```ocaml
-(* type A = {}
-   let f = fun x -> x
-   in let _ = f A{}
-   in f true *)
-(
-    [{name = "A"; ty = []}],
-    ELet(("f", None, ELam("x", EVar "x")),
-        ELet(("_", None, EApp(EVar "f", ERecord("A", []))),
-        EApp(EVar "f", EBool true)))
-)
+(* let x : bool = fun y -> y in x *)
+ELet(("x", Some TyBool, ELam("y", EVar "y")), EVar "x")
 ```
-Output: `UnificationFailure "failed to unify type A with bool"`
-
-```ocaml
-(* type A = {}
-   let x : A = true
-   in x *)
-(
-    [{name = "A"; ty = []}],
-    ELet(("x", Some(TyName "A"), EBool true), EVar "x")
-)
-```
-Output: `TypeError "expression does not have type A"`
+Output: `TypeError "expression does not have type bool"`
 
 # (Mutually) recursive definitions
 
