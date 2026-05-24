@@ -451,6 +451,40 @@ let%test "if_error" =
     (UnificationFailure "failed to unify type bool with ?0 -> ?0")
     "if true then false else fun x -> x"
 
+let%test "let" =
+  let open Five() in
+  expect_type "bool" "let x = true in if x then false else true"
+
+let%test "let_ann" =
+  let open Five() in
+  expect_raises
+    (TypeError "expression does not have type bool")
+    "let x : bool = fun y -> y in x"
+
+let%test "let_nogen" =
+  let open Five() in
+  expect_raises
+    (UnificationFailure "failed to unify type bool with ?2 -> ?2")
+    "let f = fun x -> x in let _ = f true in f (fun y -> y)"
+
+let%test "let_rec" =
+  let open Five() in
+  expect_type "bool" {|
+    let rec f = fun x -> if x then g x else x
+    and g = fun x -> if x then f x else x in
+    f true
+  |}
+
+let%test "let_rec_error" =
+  let open Five() in
+  expect_raises
+    (UnificationFailure "failed to unify type bool -> bool with bool")
+    {|
+      let rec f = fun x -> if x then g x else x
+      and g : bool -> bool -> bool = fun x -> if x then f x else x in
+      f true
+    |}
+
 let%test "record" =
   let open Five() in
   expect_type "bool" {|
@@ -496,43 +530,7 @@ let%test "row_with" =
       let foo : Foo = { x = true } in { foo with y = true }
     |}
 
-let%test "let" =
-  let open Five() in
-  expect_type "bool" {|
-    type A = { x : bool }
-    let r : A = { x = true } in r.x
-  |}
-
-let%test "let_nogen" =
-  let open Five() in
-  expect_raises
-    (UnificationFailure "failed to unify type Unit with bool")
-    {|
-      type Unit = {}
-      let u : Unit = {} in
-      let f = fun x -> x in
-      let _ = f u in
-      f true
-    |}
-
-let%test "let_ann" =
-  let open Five() in
-  expect_raises
-    (TypeError "expression does not have type A")
-    {|
-      type A = {}
-      let x : A = true in x
-    |}
-
-let%test "let_rec" =
-  let open Five() in
-  expect_type "bool" {|
-    let rec f = fun x -> if x then g x else x
-    and g = fun x -> if x then f x else x in
-    f true
-  |}
-
-let%test "let_rec_error" =
+let%test "let_rec_record_error" =
   let open Five() in
   expect_raises
     (UnificationFailure "failed to unify type A with bool")
