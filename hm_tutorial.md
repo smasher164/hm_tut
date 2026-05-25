@@ -928,8 +928,37 @@ Overall, our `ERecord` case of `infer` will look like this:
     let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
     TERecord (rec_lit, fresh_unbound_var ~row:(ClosedRow flds) ())
 ```
+The next expression we have to typecheck is `EWith`, which is of the form `{ r with x = true }`. Basically, given some record and some fields that are being assigned, we need to ensure that the record has at least the fields that are being assigned. That is, the type we return for an `EWith(rcd, flds)` expression is an `Unbound` type variable with an `OpenRow` constraint holding the types of `flds`.
 
-
+We start by inferring the type of the record.
+```ocaml
+| EWith (rcd, flds) ->
+    let rcd = infer env rcd in
+```
+And like before, we want to map over the `flds` and infer the type of each one of them, followed by mapping over the `tyrecord_lit` to get a `record_ty`.
+```ocaml
+let rec_lit = List.map flds ~f:(fun (id, x) -> (id, infer env x)) in
+let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
+```
+We can now generate an `Unbound` type variable for the return type holding the `OpenRow` constraint.
+```ocaml
+let row = fresh_unbound_var ~row:(OpenRow flds) () in
+```
+We want to ensure that the type of `rcd` is equivalent to `row`, since `EWith` guarantees that the input and the output type are the same. This is why we'll unify them.
+```ocaml
+unify env (typ rcd) row;
+```
+We can then return the `TEWith` up with the typed record, fields, and unified type. Overall, our `EWith` case should look like this:
+```ocaml
+| EWith (rcd, flds) ->
+    let rcd = infer env rcd in
+    let rec_lit = List.map flds ~f:(fun (id, x) -> (id, infer env x)) in
+    let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
+    let row = fresh_unbound_var ~row:(OpenRow flds) () in
+    unify env (typ rcd) row;
+    TEWith (rcd, rec_lit, typ rcd)
+```
+The last expression we need to infer the type of is `EProj`, which involves accessing a field from a record.
 
 # Polymorphism
 
