@@ -22,7 +22,7 @@ module Five() = struct
   type tycon = {
     name : id;
     ty : record_ty;
-  }  
+  }
   type bind =
     | VarBind of ty (* A variable binding maps to a type. *)
     | TypeBind of tycon (* A type binding maps to a type constructor. *)

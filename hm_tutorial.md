@@ -718,7 +718,7 @@ First, we'd like to extend the environment with all of the declarations in the r
 ```ocaml
 let deduped_defs = Hash_set.create (module String) in
 ```
-We can map over the declarations, creating a `VarBind` for each one, using annotation if it exists--otherwise just a fresh type variable.
+We can map over the declarations, creating a `VarBind` for each one, using an annotation if it exists--otherwise just a fresh type variable.
 ```ocaml
 let env_decls = List.map decls ~f:(fun (id, ann, _) ->
     match Hash_set.strict_add deduped_defs id with
@@ -734,7 +734,7 @@ let env = env_decls @ env in
 ```
 Next, we use the extended environment to check that the right-hand-side of each let binding matches its corresponding type in the environment.
 
-We zip over the `VarBind` list we created earlier as well as the let declarations themselves, `check`ing that the right-hand-side's type matches the type in the `VarBind`. We return up a `tlet_decl` corresponding to the typed let declaration, ultimately giving us a `tlet_decl list`, which is what's needed in the `TELetRec`.
+We zip over the `VarBind` list we created earlier as well as the let declarations themselves, checking that the right-hand-side's type matches the type in the `VarBind`. We return up a `tlet_decl` corresponding to the typed let declaration, ultimately giving us a `tlet_decl list`, which is what's needed in the `TELetRec`.
 ```ocaml
 let decls = List.map2_exn env_decls decls ~f:(
     fun (id, VarBind ty_bind) (_, ann, rhs) ->
@@ -773,38 +773,163 @@ Overall, our `ELetRec` case looks like
     TELetRec (decls, body, typ body)
 ```
 
-That's our `let rec` case! Let's test it out with the `factorial` and `is_even`/`is_odd` examples we mentioned earlier.
+That's our `let rec` case! Let's test it out with some examples. At this point, manually writing out the AST is going to get tedious, so I'll just show the source. If you're following along with the repo, you'll notice that we've integrated so that we can avoid writing the AST out by hand.
 
 # Examples
 
 ```ocaml
-(* let rec f = fun x -> if x then g x else x
-   and g = fun x -> if x then f x else x
-   in f true *)
-(
-    [],
-    ELetRec(
-        [("f", None, ELam("x", EIf(EVar "x", EApp(EVar "g", EVar "x"), EVar "x")));
-        ("g", None, ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"), EVar "x")))],
-        EApp(EVar "f", EBool true))
-)
+typecheck_source {|
+    let rec f = fun x -> if x then g x else x
+    and g = fun x -> if x then f x else x
+    in f true
+|}
 ```
 Output: `bool`
 
 ```ocaml
-(* type A = {}
-   let rec f = fun x -> if x then g x else x
-   and g = fun x -> if x then f x else A{}
-   in f true *)
-(
-    [{name = "A"; ty = []}],
-    ELetRec(
-        [("f", None, ELam("x", EIf(EVar "x", EApp(EVar "g", EVar "x"), EVar "x")));
-        ("g", None, ELam("x", EIf(EVar "x", EApp(EVar "f", EVar "x"), ERecord("A", []))))],
-        EApp(EVar "f", EBool true))
-)
+typecheck_source {|
+    let rec f = fun x -> if x then g x else x
+    and g : bool -> bool -> bool = fun x -> if x then f x else x in
+    f true
+|}
 ```
-Output: `UnificationFailure "failed to unify type bool with A"`
+Output: `UnificationFailure "failed to unify type bool -> bool with bool"`
+
+# Type declarations
+
+An example type declaration in this language will be of the form
+```
+type Foo = {
+    bar: bool
+    baz: bool -> bool
+}
+```
+Note that the type name corresponds to a record.
+It can be constructed and projected (selected from) with
+```
+let foo : Foo = {bar = true, baz = fun x -> x} in
+foo.baz
+```
+A declaration is *nominal*. So another type with the same fields like
+```
+type Qux {
+    bar: bool
+    baz: bool -> bool
+}
+```
+cannot be used in place of `Foo`. For example, this program won't type-check:
+```
+let qux : Qux = {bar = true, baz = fun x -> x} in
+let foo : Foo = qux (* Type error: expected Foo, got Qux *)
+```
+
+Nominal types (or newtypes) are called that because you only need to compare their names to know they are different, and this is how our `unify` will treat them as well. However, if you notice in the previous examples, we construct these records without mentioning the type name on the record literal, i.e. there is no `Foo{...}` form. So while we can compare types by their name to know that they are different, we will still have to infer that a record literal corresponds to some pre-declared type. The secret sauce we need to do that is called *rows*, which we'll describe shortly.
+
+Let's discuss the implementation of our nominal types.
+First, let's introduce type declarations (type constructors) to our language.
+```ocaml
+type tycon = {
+    name : id;
+    ty : record_ty;
+}
+and record_ty = (id * ty) list
+```
+Our `prog` is now more than just an `exp`. Rather, it is now a list of type constructors and an `exp`.
+```ocaml
+type prog = tycon list * exp
+```
+We also need a way of referring to a user-defined type by name.
+```ocaml
+type ty =
+    ...
+    | TyName of id (* Type name: Foo *)
+```
+Types get added to the environment just like variables. When we search for and find a type in the environment, we get back a `TypeBind` holding our `tycon`
+```ocaml
+type bind =
+    ...
+    | TypeBind of tycon (* A type binding maps to a type constructor. *)
+```
+At the expression-level, we need a way to construct these records by specifying all of its fields.
+```ocaml
+type exp =
+    ...
+    | ERecord of record_lit (* {x = true, y = false} *)
+```
+We'll add a way to update fields using a `with` expression, producing a record of the same type with the provided fields set to different values
+```ocaml
+type exp =
+    ...
+    | EWith of exp * record_lit (* { r with x = true, y = false} *)
+```
+and a way to access fields (also called projection)
+```ocaml
+type exp =
+    ...
+    | EProj of exp * id (* r.y *)
+```
+where `record_lit` is a list of (field name, expression) pairs
+```ocaml
+and record_lit = (id * exp) list
+```
+Correspondly, we update `texp` and define `tyrecord_lit`
+```ocaml
+type texp =
+    ...
+    | TERecord of tyrecord_lit * ty
+    | TEWith of texp * tyrecord_lit * ty
+    | TEProj of texp * id * ty
+and tyrecord_lit = (id * texp) list
+```
+We can go ahead and declare the `lookup_tycon` helper that (similar to `lookup_var_type`) will search the `env` for a `TypeBind` with a name.
+```ocaml
+(* Lookup a type constructor in the environment. *)
+let lookup_tycon name (e : env) : tycon =
+    match List.Assoc.find e ~equal name with
+    | Some (TypeBind t) -> t
+    | _ -> raise (undefined_error "type" name)
+```
+Finally, in order to infer that a record literal constructs some predeclared type, we need that secret sauce I mentioned earlier. Remember how unification used type variables in place of types we hadn't figured out yet? We want to use thoses type variables for records as well, but we also want to say "we haven't figured out the type of this record yet, but we know it should have *these* fields". To do this, we are going to stash a constraint inside our `Unbound` type variable called a `row_constraint`.
+
+Basically, a *row* is a set of (label, type) pairs, a.k.a a set of field names and their types (they can also correspond to variant names and their types, but we will not be covering those in this post). If you recall, `record_ty` is exactly the structure we want to represent such a set. Our constraints, then, are how we indicate that a type variable should have *at least* certain fields or *exactly* certain fields.
+```ocaml
+and row_constraint =
+    | NoRow (* No row constraint. *)
+    | OpenRow of record_ty (* Must contain at least these fields (from EProj/EWith). *)
+    | ClosedRow of record_ty (* Must contain exactly these fields (from ERecord). *)
+```
+and so we extend the definition of an `Unbound` type variable to be
+```ocaml
+and tv = (* A type variable *)
+    | Unbound of id * row_constraint
+    ...
+```
+`NoRow` is there to represent a regular type variable as we used it earlier, `OpenRow` is there to say that a type must have at least these fields, and `ClosedRow` says that a type must have exactly these fields. For example, `A::{x: int, ...}` says that the type `A` must be a record type that at least has a field named `x` whose type is `int`. Similarly, `B::{x: int, y: int}` says that the type `B` must be a record type that exactly has the fields `x` and `y` which are both of the type `int`.
+
+Let's see how these constraints are used during type inference.
+
+We'll start off by extending `infer` to handle the record literal `ERecord`. Off the bat, even though we don't currently know the name of its type, we know exactly the fields it must have, so it must be a `ClosedRow` of some kind. Also, to know the type of a record, we need to know the type of each of its fields, so we should call `infer` on each field's type.
+```ocaml
+| ERecord rec_lit ->
+    let rec_lit = List.map rec_lit ~f:(fun (id, x) -> (id, infer env x)) in
+```
+We get back a `tyrecord_lit`. Since we want to return up its type, we want to map over and get the name and type of each field to get our `record_ty`.
+```ocaml
+    let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
+```
+Finally, to represent the type we'll return up, we create an `Unbound` type variable with a `ClosedRow` constraint holding `flds`.
+```ocaml
+fresh_unbound_var ~row:(ClosedRow flds) ()
+```
+Overall, our `ERecord` case of `infer` will look like this:
+```ocaml
+| ERecord rec_lit ->
+    let rec_lit = List.map rec_lit ~f:(fun (id, x) -> (id, infer env x)) in
+    let flds = List.map ~f:(fun (id, x) -> (id, typ x)) rec_lit in
+    TERecord (rec_lit, fresh_unbound_var ~row:(ClosedRow flds) ())
+```
+
+
 
 # Polymorphism
 
