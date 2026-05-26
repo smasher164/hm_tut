@@ -958,7 +958,15 @@ We can then return the `TEWith` up with the typed record, fields, and unified ty
     unify env (typ rcd) row;
     TEWith (rcd, rec_lit, typ rcd)
 ```
-The last expression we need to infer the type of is `EProj`, which involves accessing a field from a record.
+The last expression we need to infer the type of is `EProj`, which involves accessing a field from a record. We follow a similar approach here. Given an `EProj(rcd, fld)`, we synthesize an `Unbound` type variable with an `OpenRow` constraint containing `fld` and its type, unifiying the type variable with the type of `rcd`.
+```ocaml
+| EProj (rcd, fld) ->
+    let rcd = infer env rcd in
+    let fld_ty = fresh_unbound_var () in
+    let row = fresh_unbound_var ~row:(OpenRow [(fld, fld_ty)]) () in
+    unify env (typ rcd) row;
+    TEProj (rcd, fld, fld_ty)
+```
 
 # Polymorphism
 
