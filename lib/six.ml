@@ -74,13 +74,6 @@ module Six() = struct
     | ty -> ty
 
   (* Utility functions for pretty printing. *)
-  let ty_kind (ty : ty) =
-    match ty with
-    | TyBool -> "TyBool"
-    | TyVar _ -> "TyVar"
-    | TyArrow _ -> "TyArrow"
-    | TyName _ -> "TyName"
-
   let ty_fields f flds =
     flds
     |> List.map ~f:(fun (id, ty) -> id ^ ": " ^ f ty)
@@ -120,7 +113,6 @@ module Six() = struct
 
   exception Undefined of string
   exception DuplicateDefinition of string
-  exception MissingField of string
   exception UnificationFailure of string
   exception OccursCheck
   exception TypeError of string
@@ -140,9 +132,6 @@ module Six() = struct
   let unify_failed t1 t2 =
     UnificationFailure
       (Printf.sprintf "failed to unify type %s with %s" (ty_pretty t1) (ty_pretty t2))
-
-  let missing_field field inside =
-    MissingField (Printf.sprintf "missing field %s in %s" field inside)
 
   let type_error ty =
     TypeError(Printf.sprintf "expression does not have type %s" (ty_pretty ty))
@@ -398,22 +387,10 @@ module Six() = struct
       TEWith (rcd, rec_lit, typ rcd)
     | EProj (rcd, fld) ->
       let rcd = infer env rcd in
-      (match force (typ rcd) with
-      | TyName tname ->
-        (* Since we don't handle row polymorphism, we can't project a field off this type. *)
-        (match lookup_binding tname env with
-         | TypeVarBind -> raise (expected_ty_error "record" tname)
-         | TypeBind tc ->
-           (match List.Assoc.find tc.ty ~equal fld with
-            | Some ty -> TEProj (rcd, fld, ty)
-            | _ -> raise (missing_field fld tc.name))
-         | VarBind _ -> raise (undefined_error "type" tname))
-      | TyVar ({ contents = Unbound(id, row, scope) } as tv) ->
-        let fld_ty = fresh_unbound_var () in
-        let row = union_rows env row (OpenRow [(fld, fld_ty)]) in
-        tv := Unbound(id, row, scope);
-        TEProj(rcd, fld, fld_ty)
-      | ty -> raise (expected_ty_error "TyName or TyVar" (ty_kind ty)))
+      let fld_ty = fresh_unbound_var () in
+      let row = fresh_unbound_var ~row:(OpenRow [(fld, fld_ty)]) () in
+      unify env (typ rcd) row;
+      TEProj (rcd, fld, fld_ty)
     | ELet ((id, ann, rhs), body) ->
       enter_scope();
       let rhs =
