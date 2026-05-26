@@ -906,7 +906,48 @@ and tv = (* A type variable *)
 ```
 `NoRow` is there to represent a regular type variable as we used it earlier, `OpenRow` is there to say that a type must have at least these fields, and `ClosedRow` says that a type must have exactly these fields. For example, `A::{x: int, ...}` says that the type `A` must be a record type that at least has a field named `x` whose type is `int`. Similarly, `B::{x: int, y: int}` says that the type `B` must be a record type that exactly has the fields `x` and `y` which are both of the type `int`.
 
-Let's see how these constraints are used during type inference.
+During type inference, we will encounter places where given two types that both contain row constraints, we will need to combine them. For this reason, we will define a `union_rows` helper.
+```ocaml
+let rec union_rows env (row_a: row_constraint) (row_b: row_constraint) : row_constraint =
+    match (row_a, row_b) with
+    ...
+```
+If `NoRow` is unioned with something else, that other row is the result.
+```ocaml
+| NoRow, row | row, NoRow -> row
+```
+If two `OpenRow`s are unioned together, we want to merge their fields, producing a new `OpenRow`. If they both share fields of the same name, unify their types together.
+```ocaml
+| OpenRow row_a, OpenRow row_b ->
+    OpenRow (List.dedup_and_sort (row_a @ row_b) ~compare:(fun (f1,t1) (f2,t2) ->
+    if String.equal f1 f2 then (unify env t1 t2; 0)
+    else Poly.compare (f1,t1) (f2,t2)))
+```
+If an `OpenRow` is unioned with a `ClosedRow`, we return the `ClosedRow`. However, we need to ensure that the fields in the `OpenRow` are a subset of the fields in the `ClosedRow`, since an `OpenRow` says we want *at least* those fields held by its constraint. For this case, we will define a `fld_exists` helper that checks that a field name exists in a `record_ty` and if so, that its type unifies with our expected type.
+```ocaml
+and fld_exists env (rcd: record_ty) id ty =
+    List.exists rcd ~f:(fun (f,t) -> String.equal f id && (unify env t ty; true))
+```
+Using this, our next case inside `union_rows` is as follows:
+```ocaml
+| OpenRow o_row, ClosedRow c_row | ClosedRow c_row, OpenRow o_row ->
+    List.iter o_row ~f:(fun (id,ty) ->
+        if not (fld_exists env c_row id ty) then
+            raise (row_mismatch row_a row_b)); ClosedRow c_row
+```
+Now if two `ClosedRow`s are unioned together, we need to ensure they have the same exact fields. We can first check that their length is the same and then check that each of the first row's fields is present in the second.
+```ocaml
+| ClosedRow flds1, ClosedRow flds2 when Int.equal (List.length flds1) (List.length flds2) ->
+    List.iter flds1 ~f:(fun (id,ty) ->
+        if not (fld_exists env flds2 id ty) then
+            raise (row_mismatch row_a row_b)); ClosedRow flds1
+```
+Finally, in any other case, we can say that the rows don't match. We raise a `RowMismatch` exception.
+```ocaml
+| _ -> raise (row_mismatch row_a row_b)
+```
+
+Let's see how these constraints come up during type inference.
 
 We'll start off by extending `infer` to handle the record literal `ERecord`. Off the bat, even though we don't currently know the name of its type, we know exactly the fields it must have, so it must be a `ClosedRow` of some kind. Also, to know the type of a record, we need to know the type of each of its fields, so we should call `infer` on each field's type.
 ```ocaml
@@ -967,6 +1008,102 @@ The last expression we need to infer the type of is `EProj`, which involves acce
     unify env (typ rcd) row;
     TEProj (rcd, fld, fld_ty)
 ```
+Those are all the changes to `infer`. We need to now update `unify` to handle type names and row constraints.
+
+The bulk of the new logic happens when we try to unify `TyVar` with some other type. Since `TyVar` can now hold a `row_constraint`, if the other type is record-shaped, we need to combine the constraints of both types.
+
+We start off by destructuring the type variable.
+```ocaml
+and unify env (t1 : ty) (t2 : ty) : unit =
+    ...
+    | TyVar tv, ty | ty, TyVar tv ->
+        let Unbound(_, tv_row) = !tv in
+```
+We then want to match against `ty` and depending on what it is, union its rows with `tv_row`.
+
+First, if `ty` is a `TyName`, we want to look up that type name in the environment, get its underlying record, and union its rows with `tv_row`.
+```ocaml
+match ty with
+| TyName tname ->
+    let tc = lookup_tycon tname env in
+    ignore (union_rows env tv_row (ClosedRow tc.ty))
+...
+```
+Next we handle the case where `ty` is a type variable that is distinct from `tv`.
+```ocaml
+| TyVar other when not (phys_equal tv other) ->
+    let Unbound(id, other_row) = !other in
+```
+We will union `tv_row` with `other_row`. First, we should make sure `tv` isn't mentioned inside the fields' types inside `other_row`.
+```ocaml
+row_iter other_row (fun (_, ty) -> occurs tv ty);
+```
+Then we can call our `union_rows` helper and set `other`'s row to be the unioned row.
+```ocaml
+let row = union_rows env tv_row other_row in
+other := Unbound(id, row)
+```
+Next, if `tv_row` is a `NoRow`, i.e. it's a regular type variable without a row constraint, we do a standard occurs check between `tv` and `ty`.
+```ocaml
+| _ when equal tv_row NoRow ->
+    (* If either type is a type variable, ensure that the type variable does not occur in the type. *)
+    occurs tv ty
+```
+Otherwise, it must mean that `tv_row` has some row constraint and `ty` is not record-shaped, which means unification has failed.
+```ocaml
+| _ ->
+    (* ty is not record-like. Can't unify with a row. *)
+    raise (unify_failed t1 t2));
+```
+If we haven't failed unification by now, we can `Link ty` to `tv`.
+Overall, the `TyVar` case of the match looks like
+```ocaml
+| TyVar tv, ty | ty, TyVar tv ->
+    let Unbound(_, tv_row) = !tv in
+    (match ty with
+    | TyName tname ->
+        let tc = lookup_tycon tname env in
+        ignore (union_rows env tv_row (ClosedRow tc.ty))
+    | TyVar other when not (phys_equal tv other) ->
+        (* Union the rows of these two distinct type variables. *)
+        let Unbound(id, other_row) = !other in
+        row_iter other_row (fun (_, ty) -> occurs tv ty);
+        let row = union_rows env tv_row other_row in
+        other := Unbound(id, row)
+    | _ when equal tv_row NoRow ->
+        (* If either type is a type variable, ensure that the type variable does not occur in the type. *)
+        occurs tv ty
+    | _ ->
+        (* ty is not record-like. Can't unify with a row. *)
+        raise (unify_failed t1 t2));
+    (* Link the type variable to the type. *)
+    tv := Link ty
+```
+Finally, `unify` needs to handle the trivial case where two `TyName`s have the same name.
+```ocaml
+and unify env (t1 : ty) (t2 : ty) : unit =
+    ...
+    | TyName a, TyName b when equal a b -> () (* The type names are the same. *)
+```
+With that, we've added type declarations and inference for record literals into our language.
+
+# Examples
+
+```ocaml
+typecheck_prog {|
+    type Foo = { x : bool, y : bool -> bool }
+    let foo : Foo = { x = true, y = fun x -> x } in foo.y true
+|}
+```
+Output: `bool`
+
+```ocaml
+typecheck_prog {|
+    type Foo = { x : bool }
+    let foo : Foo = { x = true } in { foo with y = true }
+|}
+```
+Output: `RowMismatch "{y: bool, ...} and {x: bool}"`
 
 # Polymorphism
 
