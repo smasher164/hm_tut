@@ -278,7 +278,15 @@ The `EBool` case is trivially known, since its type is `TyBool`.
   | EBool b -> TEBool (b, TyBool) (* A true/false value is of type Bool. *)
 ```
 
-Aside: The typing rule for booleans would look like
+Aside:
+The formation rule for booleans looks like
+```
+WF-Bool:-------------
+         ⊢ Bool type  
+```
+This is basically an axiom that says `Bool` is a known type.
+
+The typing rule for booleans would look like
 ```       
         b ∈ {true, false} 
 T-Bool:-------------------
@@ -360,7 +368,17 @@ let typ (texp : texp) : ty =
   | TELam (_, _, ty) -> ty
 ```
 
-Aside: The typing rule for lambdas looks like
+Aside:
+
+The formation rule for function types looks like
+```
+          ⊢ A type    ⊢ B type 
+WF-Arrow:----------------------
+              ⊢ A -> B type    
+```
+This says that if `A` and `B` are types, then `A -> B` is a type.
+
+The typing rule for lambdas looks like
 ```
           Γ, x : A ⊢ e : B    
 T-Lam:------------------------
@@ -675,6 +693,24 @@ Our `ELet` case ends up looking like
     let body = infer env body in
     TELet ((id, ann, rhs), body, typ body)
 ```
+
+Aside: Here are the typing rules for `ELet`. We split them into two rules, one for a let binding without an annotation and one for a let binding with an annotation.
+
+```
+       Γ ⊢ exp : A    Γ, binding : A ⊢ body : B 
+T-Let:------------------------------------------
+           Γ ⊢ let binding = exp in body : B    
+```
+This says that under the context, if `exp` can be inferred to be the type `A`, and the context extended with the `binding` having the type `A` lets us give `body` the type `B`, then the entire expression `let binding = exp in body` can be given the type `B`.
+
+```
+          ⊢ A type    Γ ⊢ exp : A    Γ, binding : A ⊢ body : B 
+T-LetAnn:------------------------------------------------------
+                  Γ ⊢ let binding : A = exp in body : B        
+```
+This says that if `A` is a valid type, `exp` can be inferred to be the type `A`, and the context extended with the `binding` annotated with the type `A` lets us give `body` the type `B`, then the entire annotated expression `let binding: A = exp in body` can be given the type `B`.
+
+Note that the only thing that's really changed here is that we need to make sure that `A` is a well-formed annotation. Other than that, the first rule is deriving `A` and in the second, `A` is an annotation supplied by the programmer.
 
 Now let's test it out!
 
@@ -1108,14 +1144,16 @@ Output: `RowMismatch "{y: bool, ...} and {x: bool}"`
 # Polymorphism
 
 Up until now, the language we have type-checked does not have any polymorphism.
-For example, in the following program, `f` cannot be applied both to `A{}` and to `B{}`.
+For example, in the following program, `f` cannot be applied both to a value of type `A` and to a value of type `B`.
 ```
 type A = {}
 type B = {}
 
 let f = fun x -> x in
-let _ = f A{} in
-f B{}
+let a : A = {} in
+let b : B = {} in
+let _ = f a in
+f b
 ```
 
 Our type inference algorithm gives `f` the type `A -> A`, so when it tries to type-check the application to `B`, it fails.
@@ -1124,25 +1162,27 @@ We'd have to rewrite the example to have a separate `fA` and `fB` to get it to t
 ```
 let fA = fun x -> x in
 let fB = fun x -> x in
-let _ = fA A{} in
-fB B{}
+let a : A = {} in
+let b : B = {} in
+let _ = fA a in
+fB b
 ```
 
 But when we look at `f`, nothing about its definition requires it to be restricted to `A`. How do we make `f` polymorphic (or generic) over its arguments?
 
 # Instantiation
 
-We'd like `f`'s type to be something like `forall 'a. 'a -> 'a`. But hang on, how would we even use a type like that? We can't exactly unify `'a` with `A`. We need to treat `'a` as a placeholder (or type parameter) that gets substituted with a concrete type argument. This process of taking a generic type and replacing its type parameters with concrete types is called *instantiation*. When `f` gets applied to `A{}` or `B{}`, we look up its type (which will now be generic), and instantiate it to have its type parameters substituted with fresh type variables.
+We'd like `f`'s type to be something like `forall 'a. 'a -> 'a`. But hang on, how would we even use a type like that? We can't exactly unify `'a` with `A`. We need to treat `'a` as a placeholder (or type parameter) that gets substituted with a concrete type argument. This process of taking a generic type and replacing its type parameters with concrete types is called *instantiation*. When `f` gets applied to an `A` or `B`, we look up its type (which will now be generic), and instantiate it to have its type parameters substituted with fresh type variables.
 
-So for example, when `f` is applied to `A{}`, `forall 'a. 'a -> 'a` gets instantiated to get `?0 -> '0`. Then `A -> ?1` gets unified with `?0 -> ?0` as normal, resulting in `A -> A` as the type of the *concrete* instance of `f`.
+So for example, when `f` is applied to an `A`, `forall 'a. 'a -> 'a` gets instantiated to get `?0 -> '0`. Then `A -> ?1` gets unified with `?0 -> ?0` as normal, resulting in `A -> A` as the type of the *concrete* instance of `f`.
 
-Likewise, when `f` is applied to `B{}`, `forall 'a. 'a -> 'a` gets instantiated to get `?2 -> '2`, and the same process will result in its concrete type becoming `B -> B`.
+Likewise, when `f` is applied to a `B`, `forall 'a. 'a -> 'a` gets instantiated to get `?2 -> '2`, and the same process will result in its concrete type becoming `B -> B`.
 
 To get generic instantiation working, we first want to introduce `generic_ty` that contains a type as well as a list of type parameters.
 ```ocaml
-(* A generic type. Should be read as forall p1..pn. ty, where p1..pn are
-    the type parameters. It is separated from ty because in HM, a forall can
-    only be at the top level of a type. *)
+(* A generic type. Should be read as forall p1..pn. ty, where p1..pn
+   are the type parameters. It is separated from ty because in HM, a
+   forall can only be at the top level of a type. *)
 type generic_ty = {
     type_params: id list;
     ty : ty;

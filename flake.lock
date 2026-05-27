@@ -18,6 +18,29 @@
         "type": "github"
       }
     },
+    "judgefmt": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1779854311,
+        "narHash": "sha256-ge1+ugwtQHMpHgjKboreb2cHlo6iVWmjz/r5fkV20Nk=",
+        "owner": "smasher164",
+        "repo": "judgefmt",
+        "rev": "d1e1f6783d530ae44e3543a57fc85c90f6d2e7fb",
+        "type": "github"
+      },
+      "original": {
+        "owner": "smasher164",
+        "repo": "judgefmt",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1779357205,
@@ -37,6 +60,7 @@
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
+        "judgefmt": "judgefmt",
         "nixpkgs": "nixpkgs"
       }
     },

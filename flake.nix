@@ -3,9 +3,14 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    judgefmt = {
+      url = "github:smasher164/judgefmt";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, judgefmt }:
     let supportedSystems = [ "aarch64-linux" "i686-linux" "x86_64-linux" "aarch64-darwin" ];
     in flake-utils.lib.eachSystem supportedSystems (system:
       let
@@ -15,6 +20,7 @@
       in {
         devShell = pkgs.mkShell {
           buildInputs = with pkgs.ocamlPackages; [
+            judgefmt.packages.${system}.judgefmt
             ocaml
             ocaml-lsp
             dune_3
