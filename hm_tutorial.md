@@ -317,11 +317,11 @@ So all in all, the `EVar` case looks like
 
 Aside: The typing rule for variables would look like
 ```
-        x:T ∈ Γ  
-T-Var:-----------
-       Γ ⊢ x : T 
+       VarBind(x, T) ∈ Γ 
+T-Var:-------------------
+           Γ ⊢ x : T     
 ```
-This basically says that if `x` is given the type `T` in the context (environment) `Γ`, then we can assume that under the context `Γ`, `x` has the type `T`. Bewildering, I know.
+This basically says that if `x` has a binding to the type `T` inside the context (environment) `Γ`, then we can assume that under the context `Γ`, `x` has the type `T`. Bewildering, I know.
 
 The next case is `ELam`. Given some lambda like `fun param -> body`, we want to return its type, which will be a `TyArrow`. First, we need the type for `param`. If you recall from the example, `param`'s type gets inferred based on the argument of the lambda. What we need to do is associate it with a fresh `Unbound` type variable (call it `ty_param`), so then when the argument's type *is* available, the type variable will get bound to it (they will be unified).
 
@@ -380,9 +380,9 @@ This says that if `A` and `B` are types, then `A -> B` is a type.
 
 The typing rule for lambdas looks like
 ```
-          Γ, x : A ⊢ e : B    
-T-Lam:------------------------
-       Γ, fun x -> e : A -> B 
+       Γ, VarBind(x, A) ⊢ e : B 
+T-Lam:--------------------------
+        Γ ⊢ fun x -> e : A -> B 
 ```
 If under the context `Γ`, `x` (the parameter)'s type being `A` lets us infer that `e` (the body)'s type is `B`, then we can assume that the lambda's type is `A -> B`.
 
@@ -697,18 +697,18 @@ Our `ELet` case ends up looking like
 Aside: Here are the typing rules for `ELet`. We split them into two rules, one for a let binding without an annotation and one for a let binding with an annotation.
 
 ```
-       Γ ⊢ exp : A    Γ, binding : A ⊢ body : B 
-T-Let:------------------------------------------
-           Γ ⊢ let binding = exp in body : B    
+       Γ ⊢ exp : A    Γ, VarBind(x, A) ⊢ body : B 
+T-Let:--------------------------------------------
+               Γ ⊢ let x = exp in body : B        
 ```
-This says that under the context, if `exp` can be inferred to be the type `A`, and the context extended with the `binding` having the type `A` lets us give `body` the type `B`, then the entire expression `let binding = exp in body` can be given the type `B`.
+This says that under the context, if `exp` can be inferred to be the type `A`, and the context extended with `x` having the type `A` lets us give `body` the type `B`, then the entire expression `let x = exp in body` can be given the type `B`.
 
 ```
-          ⊢ A type    Γ ⊢ exp : A    Γ, binding : A ⊢ body : B 
-T-LetAnn:------------------------------------------------------
-                  Γ ⊢ let binding : A = exp in body : B        
+          ⊢ A type    Γ ⊢ exp : A    Γ, VarBind(x, A) ⊢ body : B 
+T-LetAnn:--------------------------------------------------------
+                      Γ ⊢ let x : A = exp in body : B            
 ```
-This says that if `A` is a valid type, `exp` can be inferred to be the type `A`, and the context extended with the `binding` annotated with the type `A` lets us give `body` the type `B`, then the entire annotated expression `let binding: A = exp in body` can be given the type `B`.
+This says that if `A` is a valid type, `exp` can be inferred to be the type `A`, and the context extended with `x` annotated with the type `A` lets us give `body` the type `B`, then the entire annotated expression `let x: A = exp in body` can be given the type `B`.
 
 Note that the only thing that's really changed here is that we need to make sure that `A` is a well-formed annotation. Other than that, the first rule is deriving `A` and in the second, `A` is an annotation supplied by the programmer.
 
