@@ -1123,6 +1123,26 @@ and unify env (t1 : ty) (t2 : ty) : unit =
 ```
 With that, we've added type declarations and inference for record literals into our language.
 
+Aside: These are the typing rules for records.
+
+```
+          TypeBind(T, { l : T_l | l ∈ L }) ∈ Γ    Γ ⊢ e_l : T_l for each l ∈ L 
+T-Record:----------------------------------------------------------------------
+                               Γ ⊢ { l = e_l | l ∈ L } : T                     
+```
+The rule for with expression.
+```
+        Γ ⊢ r : T    TypeBind(T, { l : T_l | l ∈ L }) ∈ Γ    M ⊆ L    Γ ⊢ e_m : T_m for each m ∈ M 
+T-With:--------------------------------------------------------------------------------------------
+                                    Γ ⊢ { r with m = e_m | m ∈ M } : T                             
+```
+and for projection.
+```
+        Γ ⊢ r : T    TypeBind(T, { l : T_l | l ∈ L }) ∈ Γ    f ∈ L 
+T-Proj:------------------------------------------------------------
+                               Γ ⊢ r.f : T_f                       
+```
+
 # Examples
 
 ```ocaml
