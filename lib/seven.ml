@@ -114,7 +114,6 @@ module Seven() = struct
     | TyName name -> name
 
   exception Undefined of string
-  exception DuplicateDefinition of string
   exception UnificationFailure of string
   exception OccursCheck
   exception TypeError of string
@@ -127,9 +126,6 @@ module Seven() = struct
 
   let undefined_error kind name =
     Undefined (Printf.sprintf "%s %s not defined" kind name)
-
-  let duplicate_definition def =
-    DuplicateDefinition (Printf.sprintf "duplicate definition of %s" def)
 
   let unify_failed t1 t2 =
     UnificationFailure
@@ -154,6 +150,16 @@ module Seven() = struct
     match List.Assoc.find e ~equal name with
     | Some b -> b
     | None -> raise (undefined_error "type" name)
+
+  let rec wf_ty (env : env) (ty : ty) : unit =
+    match ty with
+    | TyBool -> ()
+    | TyArrow (from, dst) -> wf_ty env from; wf_ty env dst
+    | TyName name -> ignore (lookup_binding name env)
+    | TyVar _ -> ()
+
+  let wf_tycon (env : env) (tc : tycon) : unit =
+    List.iter tc.ty ~f:(fun (_, ty) -> wf_ty env ty)
 
   (* Get the type of a typed expression. *)
   let typ (texp : texp) : ty =
@@ -439,11 +445,6 @@ module Seven() = struct
       TELet ((id, ann, rhs), body, typ body)
     | ELetRec (decls, body) ->
       enter_scope();
-      let deduped_defs = Hash_set.create (module String) in
-      List.iter decls ~f:(fun (id, _, _) ->
-        match Hash_set.strict_add deduped_defs id with
-        | Ok _ -> ()
-        | Error _ -> raise (duplicate_definition id));
       let prepared = List.map decls ~f:(fun (id, ann, rhs) ->
         match ann with
         | Some ann ->
@@ -501,12 +502,8 @@ module Seven() = struct
     walk texp
 
   let typecheck_prog ((tl, exp): prog) : texp =
-    let deduped_defs = Hash_set.create (module String) in
-    let env = List.map tl ~f:(fun tc ->
-      match Hash_set.strict_add deduped_defs tc.name with
-      | Ok _ -> (tc.name, TypeBind tc)
-      | Error _ -> raise (duplicate_definition tc.name))
-    in
+    let env = List.map tl ~f:(fun tc -> (tc.name, TypeBind tc)) in
+    List.iter tl ~f:(wf_tycon env);
     let texp = infer env exp in
     check_no_unbound texp;
     texp
