@@ -1131,6 +1131,8 @@ Here is the formation rule for user-defined types:
 WF-Tycon:---------------------------------------------------------------------
                                        Γ ⊢ T type                             
 ```
+This rule basically says if T is a user-defined type, in order for it to be well-formed, each of its field's types must be well-defined.
+
 Note: From this point on, Γ needs to be threaded throughout formation rules for well-formedness to hold, including WF-Bool and WF-Arrow. For example, WF-Arrow relies on `A` and `B` being well-formed for `A -> B` to be well-formed.
 
 The typing rule for records:
@@ -1140,18 +1142,23 @@ The typing rule for records:
 T-Record:----------------------------------------------------------------------
                                Γ ⊢ { l = e_l | l ∈ L } : T                     
 ```
+This says that if there is a type T in the context whose fields match that of the record, the record's type is T.
+
 The rule for with expressions:
 ```
         Γ ⊢ r : T    TypeBind(T, { l : T_l | l ∈ L }) ∈ Γ    M ⊆ L    Γ ⊢ e_m : T_m for each m ∈ M 
 T-With:--------------------------------------------------------------------------------------------
                                     Γ ⊢ { r with m = e_m | m ∈ M } : T                             
 ```
+This says that if r is a record of type T that contains each of the fields in the with expression, then the returned value of the with expression is also of type T.
+
 and for projection:
 ```
         Γ ⊢ r : T    TypeBind(T, { l : T_l | l ∈ L }) ∈ Γ    f ∈ L 
 T-Proj:------------------------------------------------------------
                                Γ ⊢ r.f : T_f                       
 ```
+This says that if r is a record of type T containing a field f, then r.f has the type of that field in T.
 
 # Examples
 
