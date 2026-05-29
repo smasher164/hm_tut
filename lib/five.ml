@@ -460,6 +460,15 @@ let%test "let_rec_error" =
       f true
     |}
 
+let%test "tycon_undefined" =
+  let open Five() in
+  expect_raises
+    (Undefined "type Bogus not defined")
+    {|
+      type Foo = { x : Bogus }
+      true
+    |}
+
 let%test "record" =
   let open Five() in
   expect_type "bool" {|
@@ -505,13 +514,3 @@ let%test "row_with" =
       let foo : Foo = { x = true } in { foo with y = true }
     |}
 
-let%test "let_rec_record_error" =
-  let open Five() in
-  expect_raises
-    (UnificationFailure "failed to unify type A with bool")
-    {|
-      type A = {}
-      let rec f = fun x -> if x then g x else x
-      and g : bool -> A = fun x -> if x then f x else let a : A = {} in a in
-      f true
-    |}

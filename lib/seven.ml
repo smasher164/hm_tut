@@ -566,6 +566,43 @@ let%test "if_error" =
     (UnificationFailure "failed to unify type bool with ?0 -> ?0")
     "if true then false else fun x -> x"
 
+let%test "let" =
+  let open Seven() in
+  expect_type "bool" "let x = true in if x then false else true"
+
+let%test "let_ann" =
+  let open Seven() in
+  expect_raises
+    (TypeError "expression does not have type bool")
+    "let x : bool = fun y -> y in x"
+
+let%test "let_rec" =
+  let open Seven() in
+  expect_type "bool" {|
+    let rec f = fun x -> if x then g x else x
+    and g = fun x -> if x then f x else x in
+    f true
+  |}
+
+let%test "let_rec_error" =
+  let open Seven() in
+  expect_raises
+    (UnificationFailure "failed to unify type bool -> bool with bool")
+    {|
+      let rec f = fun x -> if x then g x else x
+      and g : bool -> bool -> bool = fun x -> if x then f x else x in
+      f true
+    |}
+
+let%test "tycon_undefined" =
+  let open Seven() in
+  expect_raises
+    (Undefined "type Bogus not defined")
+    {|
+      type Foo = { x : Bogus }
+      true
+    |}
+
 let%test "record" =
   let open Seven() in
   expect_type "bool" {|
@@ -611,41 +648,6 @@ let%test "row_with" =
       let foo : Foo = { x = true } in { foo with y = true }
     |}
 
-let%test "let" =
-  let open Seven() in
-  expect_type "bool" {|
-    type A = { x : bool }
-    let r : A = { x = true } in r.x
-  |}
-
-let%test "let_ann" =
-  let open Seven() in
-  expect_raises
-    (TypeError "expression does not have type A")
-    {|
-      type A = {}
-      let x : A = true in x
-    |}
-
-let%test "let_rec" =
-  let open Seven() in
-  expect_type "bool" {|
-    let rec f = fun x -> if x then g x else x
-    and g = fun x -> if x then f x else x in
-    f true
-  |}
-
-let%test "let_rec_error" =
-  let open Seven() in
-  expect_raises
-    (UnificationFailure "failed to unify type A with bool")
-    {|
-      type A = {}
-      let rec f = fun x -> if x then g x else x
-      and g : bool -> A = fun x -> if x then f x else let a : A = {} in a in
-      f true
-    |}
-
 let%test "let_gen" =
   let open Seven() in
   expect_type "bool" {|
@@ -687,18 +689,6 @@ let%test "let_gen_scope_error" =
   expect_raises
     (UnificationFailure "failed to unify type bool with bool -> ?2")
     "(fun x -> let y = x in y) true true"
-
-let%test "let_gen_row" =
-  let open Seven() in
-  expect_type "bool -> bool" {|
-    type Foo = { x : bool }
-    type Bar = { x : bool -> bool }
-    let f = fun r -> r.x in
-    let r1 : Foo = { x = true } in
-    let r2 : Bar = { x = fun y -> y } in
-    let _ = f r1 in
-    f r2
-  |}
 
 let%test "let_typevar_ref" =
   let open Seven() in
@@ -757,8 +747,20 @@ let%test "row_ann_missing_field" =
       get_x foo
     |}
 
-let%test "ann_row_poly_error" =
+let%test "ann_missing_row_constraint" =
   let open Seven() in
   expect_raises
     (Expected "expected type record, got 'a")
     "let f : forall 'a. 'a -> bool = fun r -> r.x in true"
+
+let%test "let_gen_row" =
+  let open Seven() in
+  expect_type "bool -> bool" {|
+    type Foo = { x : bool }
+    type Bar = { x : bool -> bool }
+    let f = fun r -> r.x in
+    let r1 : Foo = { x = true } in
+    let r2 : Bar = { x = fun y -> y } in
+    let _ = f r1 in
+    f r2
+  |}
