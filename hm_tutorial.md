@@ -750,21 +750,14 @@ Let's take a look at type inference for `ELetRec`.
 | ELetRec (decls, body) ->
     ...
 ```
-First, we'd like to extend the environment with all of the declarations in the recursive let binding. We also want to ensure that we don't have any duplicates, so let's initialize a `Hash_set` to store the declaration names.
-```ocaml
-let deduped_defs = Hash_set.create (module String) in
-```
-We can map over the declarations, creating a `VarBind` for each one, using an annotation if it exists--otherwise just a fresh type variable.
+First, we'd like to extend the environment with all of the declarations in the recursive let binding. We map over the declarations, creating a `VarBind` for each one, using an annotation if it exists--otherwise just a fresh type variable.
 ```ocaml
 let env_decls = List.map decls ~f:(fun (id, ann, _) ->
-    match Hash_set.strict_add deduped_defs id with
-    | Ok _ ->
-        let ty_decl =
-            match ann with
-            | Some ann -> ann
-            | None -> fresh_unbound_var()
-        in (id, VarBind ty_decl)
-    | Error _ -> raise (duplicate_definition id) 
+    let ty_decl =
+        match ann with
+        | Some ann -> ann
+        | None -> fresh_unbound_var()
+    in (id, VarBind ty_decl)
 ) in
 let env = env_decls @ env in
 ```
@@ -788,16 +781,12 @@ TELetRec (decls, body, typ body)
 Overall, our `ELetRec` case looks like
 ```ocaml
 | ELetRec (decls, body) ->
-    let deduped_defs = Hash_set.create (module String) in
     let env_decls = List.map decls ~f:(fun (id, ann, _) ->
-        match Hash_set.strict_add deduped_defs id with
-        | Ok _ ->
-            let ty_decl =
-                match ann with
-                | Some ann -> ann
-                | None -> fresh_unbound_var()
-            in (id, VarBind ty_decl)
-        | Error _ -> raise (duplicate_definition id) 
+        let ty_decl =
+            match ann with
+            | Some ann -> ann
+            | None -> fresh_unbound_var()
+        in (id, VarBind ty_decl)
     ) in
     let env = env_decls @ env in
     let decls : tlet_decl list = List.map2_exn env_decls decls ~f:(
@@ -1232,7 +1221,7 @@ For example, this function can't be written in HM. It accepts a polymorphic iden
 ```
 fun f (g: forall a. a -> a) => (g 1, g "hello")
 ```
-However, this is not very limiting in practice. Most of the polymorphic functions you'd ever want to write can be done in HM.
+However, this is not very limiting in practice. Most of the polymorphic functions you'd ever want to write can be written in HM.
 
 Aside:
 There are some useful exceptions though. For example, Haskell can use the `ST` monad to scope an action to a particular thread with the signature
@@ -1277,158 +1266,131 @@ So in our `EVar` case, after calling `lookup_var_type`, we want to `inst`antiate
     TEVar (name, inst var_ty)
 ```
 
-Another place that's different is in type annotations. If you recall from our `ELet` case, when we had an annotation, we called `check env ann rhs`. However, `ann` was a simple type then. Now, it could be generic, so we should instantiate it like `check env (inst ann) rhs`. That's  it! Our `ELet` case now looks like
-```ocaml
-| ELet ((id, ann, rhs), body) ->
-    let rhs =
-        match ann with
-        | Some ann -> check env (inst ann) rhs
-        | None -> infer env rhs
-    in
-    let env = (id, VarBind (typ rhs)) :: env in
-    let body = infer env body in
-    TELet ((id, ann, rhs), body, typ body)
-```
-
-We update our `ELetRec` case similarly. Where we previously had a
-```ocaml
-match ann with
-| Some ann -> ann
-| None -> fresh_unbound_var()
-```
-We want to `inst ann` in the `Some` case. So our `ELetRec` case should now look like
-```ocaml
-| ELetRec (decls, body) ->
-    let deduped_defs = Hash_set.create (module String) in
-    let env_decls = List.map decls ~f:(fun (id, ann, _) ->
-        match Hash_set.strict_add deduped_defs id with
-        | Ok _ ->
-            let ty_decl =
-                match ann with
-                | Some ann -> inst ann
-                | None -> fresh_unbound_var()
-            in (id, VarBind ty_decl)
-        | Error _ -> raise (duplicate_definition id) 
-    ) in
-    let env = env_decls @ env in
-    let decls = List.map2_exn env_decls decls ~f:(
-        fun (id, VarBind ty_bind) (_, ann, rhs) ->
-            let trhs = check env ty_bind rhs in
-            (id, ann, trhs))
-    in
-    let body = infer env body in
-    TELetRec (decls, body, typ body)
-```
-
-Those are the places where we need to instantiate generic types. We should now delve into how `inst` is implemented. Let's run through a simple example first, to get the point across.
-Given the generic type `forall a b. a -> (b -> a)`, if `a` had the fresh type variable `?0` and `b` had the fresh type variable `?1`, the instantiated type should be `?0 -> (?1 -> ?0)`.
+Now let's delve into how `inst` is implemented. Let's run through a simple example first, to get the point across.
+Given the generic type `forall 'a 'b. 'a -> ('b -> 'a)`, if `a` had the fresh type variable `?0` and `b` had the fresh type variable `?1`, the instantiated type should be `?0 -> (?1 -> ?0)`.
 More concretely, if the `generic_ty` is
 ```ocaml
 {
-    type_params = ["a"; "b"];
-    ty = TyArrow(TyName "a", TyArrow(TyName "b", TyName "a"))
+    type_params = ["'a"; "'b"];
+    ty = TyArrow(TyName "'a", TyArrow(TyName "'b", TyName "'a"))
 }
 ```
 the instantiated type is something like
 ```ocaml
-let a = TyVar(ref(Unbound "?0")) in
-let b = TyVar(ref(Unbound "?1")) in
+let a = TyVar(ref(Unbound("?0", NoRow))) in
+let b = TyVar(ref(Unbound("?1", NoRow))) in
 TyArrow(a), TyArrow(b, a))
 ```
 (Note: I bound the `TyVar`s to variables here to show that the references would be the same.)
 
-The actual implementation of `inst` just needs to create a mapping from each type parameter to a fresh type variable, traverse over the type, and replace each reference to that type parameter with that type variable.
-
+The actual implementation of `inst` just needs to create a hash table mapping from a type parameter to a fresh unbound type variable, traverse over the type, and replace each reference to that type parameter with that type variable. 
 ```ocaml
-let inst (gty: generic_ty) : ty =
-    ...
-```
-We'll create a helper to create the mapping as a hash tabe.
-```ocaml
-(* Create and initialize a hash table of ids and fresh unbound type
-   variables. *)
-let create_table_for_type_params (l: id list) : (id, ty) Hashtbl.t =
-    match
-        Hashtbl.create_mapped
-            (module String)
-            ~get_key:Fn.id
-            ~get_data:(fun _ -> fresh_unbound_var ())
-            l
-    with
-    | `Ok tbl -> tbl
-    | `Duplicate_keys _ -> failwith "unreachable: duplicate keys in type params"
-```
-
-After calling the helper to create the mapping of type parameters to type variables,
-```ocaml
-let tbl = create_table_for_type_params gty.type_params in
-```
-we need to walk over `gty.ty` (the underyling type in the generic type) and replace all of the occurences of a type parameter in the hash table with the associated type variable.
-Let's create a traversal function `inst'` that accepts and returns a `ty`. We match over a `force ty`, which allows us to compress some of the `Link`s in our types (it's always safe to return the underlying type of a `Link` in place of it).
-```ocaml
-let rec inst' (ty: ty) =
-    match force ty with
-    | TyName id as ty ->
-    | TyArrow (from, dst) ->
-    | TyRecord (id, flds) ->
-    | ty -> ty
-```
-The first case is the most interesting. When we encounter a `TyName` who's `id` is in the hash table, we return the corresponding type variable. Otherwise, just return the type up.
-```ocaml
-(* The quantified type variable will be referred to by a type name. *)
-match Hashtbl.find tbl id with
-| Some tv -> tv
-| None -> ty
-```
-For `TyArrow` and `TyRecord`, we just recur over their elements.
-```ocaml
-| TyArrow (from, dst) ->
-    (* Instantiate the type vars in the arrow type. *)
-    let from_inst = inst' from in
-    let dst_inst = inst' dst in
-    TyArrow (from_inst, dst_inst)
-```
-We'll create a small helper in the `TyRecord` case to `inst`antiate a single field, and we'll use it to map over the record's fields.
-```ocaml
-| TyRecord (id, flds) ->
-    (* Instantiate the type vars in the record fields. *)
-    let inst_fld (id, ty) = (id, inst' ty) in
-    TyRecord (id, List.map ~f:inst_fld flds)
-```
-Finally, in any other case, we return up the type as usual, since there's nothing to change.
-
-Our `inst'` helper is called on the generic type's underlying type, a.k.a `gty.ty`. We add a small optimization to avoid calling `inst'` in case there are no type parameters, which avoids unnecessarily traversing the type.
-Overall, our `inst` implementation looks like
-```ocaml
-(* Instantiate a generic type by replacing all the type parameters
+  (* Instantiate a generic type by replacing all the type parameters
    with fresh unbound type variables. Ensure that the same ID gets
    mapped to the same unbound type variable by using an (id, ty) Hashtbl. *)
-let inst (gty: generic_ty) : ty =
-    let tbl = create_table_for_type_params gty.type_params in
-    let rec inst' (ty: ty) =
-        match force ty with
-        | TyName id as ty -> (
-            (* The quantified type variable will be referred to by a type name. *)
-            match Hashtbl.find tbl id with
-            | Some tv -> tv
-            | None -> ty)
-        | TyArrow (from, dst) ->
-            (* Instantiate the type vars in the arrow type. *)
-            let from_inst = inst' from in
-            let dst_inst = inst' dst in
-            TyArrow (from_inst, dst_inst)
-        | TyRecord (id, flds) ->
-            (* Instantiate the type vars in the record fields. *)
-            let inst_fld (id, ty) = (id, inst' ty) in
-            TyRecord (id, List.map ~f:inst_fld flds)
-        | ty -> ty
+  let inst (gty: generic_ty) : ty =
+    let tbl = Hashtbl.create (module String) in
+    List.iter gty.type_params ~f:(fun pid ->
+      Hashtbl.set tbl ~key:pid ~data:(fresh_unbound_var ()));
+    let rec inst' ty =
+      match force ty with
+      | TyName id as ty -> (
+        match Hashtbl.find tbl id with
+        | Some tv -> tv
+        | None -> ty)
+      | TyArrow (from, dst) -> TyArrow (inst' from, inst' dst)
+      | ty -> ty
     in
     if Hashtbl.is_empty tbl then gty.ty else inst' gty.ty
 ```
 
+The next place things are different is `ELet` (and similarly `ELetRec`). Let's look at how `ELet` changes first. Because a let binding can have annotations and we now have generic types, those annotations can be polymorphic. Perhaps more interestingly, when a let binding is unannotated, it gets inferred to be as polymorphic as possible. This latter behavior is what we mentioned at the beginning of the tutorial as *generalization*. We'll cover the simple case of polymorphic bindings first, which is basically no inference, or rather, how to typecheck a let binding that has a polymorphic type annotation.
+
+What do we want from a polymorphic type annotation? Imagine we had the following program
+```
+let f : forall 'a. 'a -> 'a = fun x ->
+    let y : 'a = x in y
+in f true
+```
+Notice how the annotation on the `f` introduces `'a` with a `forall`. `'a` is a type variable that can range over any type, so it can be instantiated with for example, `int`, `bool`, `string`, etc... On the right-hand-side of the let binding, we see a function whose body has another let binding, this time with an annotation mentioning the same `'a`. Basically, if `f` gets instantiated with an `int`, the instantiation's type would be `int -> int`, and the inner let binding's type would be `int`. We can say that the `'a` introduced by `forall 'a` on `f`'s annotation is scoped to the right-hand-side of `f`'s binding.
+
+Another factor we should consider when we have type variables inside annotations is rigidity. What would happen if we tried to instantiate a generic annotation? Let's try to type-check the following program and see what happens:
+```
+let f : forall 'a 'b. 'a -> 'b = fun x -> x in f
+```
+To be clear, we do *not* want this to type-check. We assigned an identity function the generic type `forall 'a 'b. 'a -> 'b`, but that implies `'a` and `'b` must be distinct types, whereas in an identity function like `fun x -> x`, the input type must match the output type.
+
+However, when we instantiate this type, we see `TyArrow(?a, ?b)` which `check` tries to `unify` with the function's type `TyArrow(?0, ?0)`, so
+```
+unify TyArrow(?0, ?0) TyArrow(?a, ?b)
+    unify ?0 ?a
+        ?0 := Link(?a)
+    unify ?0 ?b
+        force ?0 = ?a
+            unify ?a ?b
+                ?a := Link(?b)
+```
+We just unified `?a` with `?b` and type-checking did passed, which is *not* what we want. So how do we fix this?
+
+Well imagine that instead of working with `Unbound` type variables for `?a` and `?b`, we were working with `TyName "a"` and `TyName "b"`. Two `TyName`s with different names are inherently unequal and do not unify. That's the key. We treat type variables as `TyName`s on their own.
+
+```
+unify TyArrow(?0, ?0) TyArrow(TyName "a", TyName "b")
+  unify ?0 TyName "a"
+    ?0 := Link(TyName "a")
+  unify ?0 TyName "b"
+    force ?0 = TyName "a"
+        unify TyName "a" TyName "b"
+```
+`unify TyName "a" TyName "b"` fails, and so this program doesn't type-check.
+
+What `TyName` is doing here is serving as a *rigid* type variable. That is, unless the type variables have the same name, they do not unify.
+
+Instead of our typical instantiation, we will turn all the type variables in a `generic_ty` into `TyName`s (a.k.a rigid type variables), and extend our environment to hold those names. Extending our environment this way gives us scoping for these type variables, hence these are *scoped* and *rigid* type variables, a lot of jargon to say that the type variables in an annotation get put in our environment and get referenced as type names.
+
+To implement this, first, we will introduce another kind of binding to our environment called `TypeVarBind`. This just indicates that a name we look up is in fact a type variable.
+```ocaml
+type bind =
+    ...
+    | TypeVarBind (* A type variable binding marks some rigid type. *)
+```
+Then, we'll update our environment to hold `TypeVarBind`s for every type parameter in our generic type. This is where we make our annotation rigid. We don't need to modify the body of the type, because if we aren't calling `inst`, references to the type variable are just `TyName`s.
+```ocaml
+(* Turn a generic_ty into its rigid form, so that when annotations are instantiated, 
+   they don't produce Unbound type variables that can unify with each other.*)
+let as_rigid (gty: generic_ty) : env * ty =
+    let extras = List.map gty.type_params ~f:(fun id -> (id, TypeVarBind)) in
+    (extras, gty.ty)
+```
+
+For the `unify` trace from earlier to actually reject the invalid program, we need to update `unify` to handle `TypeVarBind`. We generalize `lookup_tycon` into a `lookup_binding` function that returns any binding, and the `TyName` arm becomes
+
+```ocaml
+| TyName tname ->
+  (match lookup_binding tname env with
+   | TypeVarBind ->
+     (match tv_row with
+      | NoRow -> ()
+      | _ -> raise (expected_ty_error "record" tname))
+   | TypeBind tc -> ignore (union_rows env tv_row (ClosedRow tc.ty))
+   | VarBind _ -> raise (undefined_error "type" tname))
+```
+
+Now let's look at how we modify `ELet`.
+```ocaml
+match ann with
+| Some ann ->
+    let (extras, check_ty) = as_rigid ann in
+    check (extras @ env) check_ty rhs
+| None -> infer env rhs
+```
+In the case where there is a generic annotation, we extend the environment with its type parameters (`extras`), and type-check the right-hand-side.
+
+Now what if we want to have a generic function that doesn't need a type annotation? This is where generalization comes in.
+
 # Generalization
 
-Now that we've covered instantiation of generic types, it's time to get to the meat of Hindley Milner--generalization. Simply put, generalization takes a type that's not generic and makes it generic by turning its unbound type variables into type parameters.
+Now that we've covered instantiation of generic types and checking generic annotations, it's time to get to the meat of Hindley Milner--generalization. Simply put, generalization takes a type that's not generic and makes it generic by turning its unbound type variables into type parameters.
 
 So given a type like
 ```ocaml
@@ -1527,18 +1489,18 @@ Okay we know the current scope, but now we need to associate each type variable 
 ```ocaml
 (* A type variable *)
 type tv =
-  | Unbound of id * scope
-    (* Unbound type variable: Holds the type variable's unique name as well as
-       the scope at which it was created. *)
+  | Unbound of id * row_constraint * scope
+    (* Unbound type variable: Holds the type variable's unique name, any
+       row constraint, and the scope at which it was created. *)
   | Link of ty (* Link type variable: Holds a reference to a type. *)
 
-(* Generate a fresh unbound type variable with a unique name and
-   the current scope. *)
-let fresh_unbound_var () =
+(* Generate a fresh unbound type variable with a unique name, an optional
+   row constraint, and the current scope. *)
+let fresh_unbound_var ?(row=NoRow) () =
     let n = !gensym_counter in
     Int.incr gensym_counter;
     let tvar = "?" ^ Int.to_string n in
-    TyVar (ref (Unbound (tvar, !current_scope)))
+    TyVar (ref (Unbound (tvar, row, !current_scope)))
 ```
 If the scope of a type variable is greater than the `current_scope`, we know it is deeper (contained inside), and it is safe to generalize. If we take another look at our previous example
 ```
@@ -1588,14 +1550,18 @@ Then, after the occurs check when we `Link` to the target, the source type varia
 
 Let's look at how we'll modify the `occurs` check. We need to add an additional case.
 ```ocaml
-| TyVar ({ contents = Unbound (id, tgt_scope) } as tgt) ->
-    (* Grabbed src and tgt's scopes. *)
-    let { contents = Unbound(_, src_scope) } = src in
+| TyVar ({ contents = Unbound (id, tgt_row, tgt_scope) } as tgt) ->
+    (* Recurse into the target's row constraint to lower scopes there too. *)
+    row_iter tgt_row (fun (_, ty) -> occurs src ty);
+    (* Grab src and tgt's scopes. *)
+    let { contents = Unbound(_, _, src_scope) } = src in
     (* Compute the minimum of their scopes (the outermost scope). *)
     let min_scope = min src_scope tgt_scope in
-    (* Update the tgt's scope to be the minimum. *)
-    tgt := Unbound (id, min_scope)
+    (* Update the tgt's scope to be the minimum, preserving its row. *)
+    tgt := Unbound (id, tgt_row, min_scope)
 ```
+
+Since `Unbound` carries `row_constraint` as well as `scope` now, the destructure and update both have to include it. We also recurse into the row's types so their scopes get lowered too.
 
 Now the overall occurs check looks like
 ```ocaml
@@ -1607,24 +1573,27 @@ let rec occurs (src : tv ref) (ty : ty) : unit =
     | TyVar tgt when phys_equal src tgt ->
         (* src type variable occurs in ty. *)
         raise OccursCheck
-    | TyVar ({ contents = Unbound (id, tgt_scope) } as tgt) ->
-        (* Grabbed src and tgt's scopes. *)
-        let { contents = Unbound(_, src_scope) } = src in
-        (* Compute the minimum of their scopes (the outermost scope). *)
+    | TyVar ({ contents = Unbound (id, tgt_row, tgt_scope) } as tgt) ->
+        row_iter tgt_row (fun (_, ty) -> occurs src ty);
+        let { contents = Unbound(_, _, src_scope) } = src in
         let min_scope = min src_scope tgt_scope in
-        (* Update the tgt's scope to be the minimum. *)
-        tgt := Unbound (id, min_scope)
+        tgt := Unbound (id, tgt_row, min_scope)
     | TyArrow(from, dst) ->
-        (* Check that src occurs in the arrow type. *)
         occurs src from;
         occurs src dst;
-    | TyRecord (_, flds) ->
-        (* Check that src occurs in the field types. *)
-        List.iter flds ~f:(fun (_, ty) -> occurs src ty)
     | _ -> ()
 ```
 
-With the occurs check updated, we know that unification will properly ensure that the scope of a type variable gets updated to be the outermost one.
+To fully ensure that the scope of a type variable gets updated to be the outermost one, we also need to update the TyVar-TyVar arm in `unify` that unions row constraints. That arm doesn't go through the `occurs` check, so we set the min scope there directly:
+```ocaml
+| TyVar other when not (phys_equal tv other) ->
+    let Unbound(id, other_row, other_scope) = !other in
+    row_iter other_row (fun (_, ty) -> occurs tv ty);
+    let min_scope = min src_scope other_scope in
+    let row = union_rows env tv_row other_row in
+    other := Unbound(id, row, min_scope)
+```
+The change is just pulling out `other_scope`, taking the minimum with `src_scope`, and stamping it on the updated `other`.
 
 Now let's actually look into how generalization is implemented. `gen` will be a function that accepts a `ty` and returns a `generic_ty`.
 ```ocaml
@@ -1633,23 +1602,19 @@ let gen (ty: ty) : generic_ty =
 ```
 We want to walk over the type to find all of its type variables, and grab the `id`s of the ones whose scope is greater than the `current_scope`. We keep track of those ids in a `Hash_set` called `type_params`. Those will be the type parameters in our generalized type.
 
-We create a helper (`gen'`) to recur down the type and return the generalized type. The first case is the only interesting one (the rest are just recurring over the `ty`). If the `scope` of the `Unbound` type variable is greater than `current_scope`, we add the type variable's `id` to the `type_params` hash set, and return up a `TyName` with that `id` to reference that type parameter. (Remember when `inst`antiation comes around, it will look for `TyName`s that correspond to those type parameters.)
+We create a helper (`gen'`) to recur down the type and return the generalized type. The first case is the only interesting one (the rest are just recurring over the `ty`). If the `scope` of the `Unbound` type variable is greater than `current_scope`, we add the type variable's `id` to the `type_params` hash set and return up a `TyName` with that `id` to reference that type parameter. (Remember when `inst`antiation comes around, it will look for `TyName`s that correspond to those type parameters.) We also mutate the tvar to `Link` to the generalized `TyName`, so the later post-pass walking the typed AST doesn't see it as still-Unbound.
 ```ocaml
 let rec gen' ty =
     match force ty with
-    | TyVar { contents = Unbound (id, scope) } when scope > !current_scope ->
+    | TyVar ({ contents = Unbound (id, _, scope) } as tv) when scope > !current_scope ->
         Hash_set.add type_params id;
+        tv := Link (TyName id);
         TyName id
-    | TyArrow (from, dst) ->
-        let from = gen' from in
-        let dst = gen' dst in
-        TyArrow(from, dst)
-    | TyRecord (id, flds) ->
-        let flds = List.map ~f:(fun (id, ty) -> (id, gen' ty)) flds in
-        TyRecord (id, flds)
+    | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
     | ty -> ty
 in
 ```
+We ignore the row constraint for now and come back to it when we handle row polymorphism.
 Finally, we call `gen'` on the input `ty`, get a sorted list of type parameters from the hash set, and return up our `generic_ty`.
 ```ocaml
 let ty = gen' ty in
@@ -1662,16 +1627,11 @@ let gen (ty: ty) : generic_ty =
     let type_params = Hash_set.create (module String) in
     let rec gen' ty =
         match force ty with
-        | TyVar { contents = Unbound (id, scope) } when scope > !current_scope ->
+        | TyVar ({ contents = Unbound (id, _, scope) } as tv) when scope > !current_scope ->
             Hash_set.add type_params id;
+            tv := Link (TyName id);
             TyName id
-        | TyArrow (from, dst) ->
-            let from = gen' from in
-            let dst = gen' dst in
-            TyArrow(from, dst)
-        | TyRecord (id, flds) ->
-            let flds = List.map ~f:(fun (id, ty) -> (id, gen' ty)) flds in
-            TyRecord (id, flds)
+        | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
         | ty -> ty
     in
     let ty = gen' ty in
@@ -1706,15 +1666,21 @@ Next, our `ELet` case will be the first interesting one. As mentioned before, we
     enter_scope();
     let rhs =
         match ann with
-        | Some ann -> check env (inst ann) rhs
+        | Some ann ->
+            let (extras, check_ty) = as_rigid ann in
+            check (extras @ env) check_ty rhs
         | None -> infer env rhs
     in
     leave_scope();
     ...
 ```
-On top of this change, however, we want to generalize the type of the right-hand-side.
+On top of this change, we want to generalize the type of the right-hand-side when there's no annotation. If there is an annotation, we already have the polymorphic type we want, so we use the annotation directly.
 ```ocaml
-let ty_gen = gen (typ rhs) in
+let ty_gen =
+    match ann with
+    | Some ann -> ann
+    | None -> gen (typ rhs)
+in
 ```
 That's the type we add to the environment for the binding.
 ```ocaml
@@ -1726,11 +1692,17 @@ And the rest is kept as usual. Overall, the `ELet` case should look like
     enter_scope();
     let rhs =
         match ann with
-        | Some ann -> check env (inst ann) rhs
+        | Some ann ->
+            let (extras, check_ty) = as_rigid ann in
+            check (extras @ env) check_ty rhs
         | None -> infer env rhs
     in
     leave_scope();
-    let ty_gen = gen (typ rhs) in
+    let ty_gen =
+    match ann with
+    | Some ann -> ann
+    | None -> gen (typ rhs)
+in
     let env = (id, VarBind ty_gen) :: env in
     let body = infer env body in
     TELet ((id, ann, rhs), body, typ body)
@@ -1752,76 +1724,84 @@ Looks like a fairly simple function, but the issue here is that the inner call t
 
 Aside: The undecidability of type inference for polymorphic recursion was shown by Fritz Henglein in the paper "Type Inference with Polymorphic Recursion". They show that semi-unification reduces to type inference for polymorphic recursion, which implies it's undecidable.
 
-We still want to `enter_scope()` at the beginning, after which we create the `deduped_defs` like before.
+We still want to `enter_scope()` at the beginning. After that, we run `as_rigid` on each declaration's annotation (if it has one), storing the result in a list called `prepared` so we can reuse it across the next few passes.
 ```ocaml
 | ELetRec (decls, body) ->
     enter_scope();
-    let deduped_defs = Hash_set.create (module String) in
+    let prepared = List.map decls ~f:(fun (id, ann, rhs) ->
+        match ann with
+        | Some ann ->
+            let (extras, check_ty) = as_rigid ann in
+            (id, Some ann, rhs, extras, check_ty)
+        | None ->
+            (id, None, rhs, [], fresh_unbound_var ()))
+    in
 ```
-When we map over each declaration to add its binding to the environment, since we aren't generalizing until later, we just want to add their non-generalized versions to the environment by calling `dont_generalize`. This time, the extended environment is set to a variable named `env'` instead of `env`, because we want to keep the old `env` around so we can add the generalized bindings.
+When we map over each prepared declaration to add its binding to the environment, since we aren't generalizing until later, we just want to add the non-generalized versions by wrapping each `check_ty` in `dont_generalize`. This time, the extended environment is set to a variable named `env_with_decls` instead of `env`, because we want to keep the old `env` around so we can add the generalized bindings.
 ```ocaml
-let env_decls = List.map decls ~f:(fun (id, ann, _) ->
-    match Hash_set.strict_add deduped_defs id with
-    | Ok _ ->
-        let ty_decl =
-            match ann with
-            | Some ann -> inst ann
-            | None -> fresh_unbound_var()
-        in (id, VarBind (dont_generalize ty_decl))
-    | Error _ -> raise (duplicate_definition id) 
-) in
-let env' = env_decls @ env in
+let env_decls = List.map prepared ~f:(fun (id, _, _, _, check_ty) ->
+    (id, VarBind (dont_generalize check_ty)))
+in
+let env_with_decls = env_decls @ env in
 ```
-When we check the right-hand-side of the declarations using the types in the extended environment (`env'`), we call `inst` on it to turn it from a `generic_ty` to `ty`. After all of the right-hand-side expressions in the recursive let binding have been inferred, then we can `leave_scope()`. This list of declarations needs to be a `tlet_decl list`, since that's what `TELetRec` expects.
+When we check the right-hand-side of the declarations using the types in the extended environment (`env_with_decls`), we add the rigid `extras` to it and check against `check_ty`. After all of the right-hand-side expressions in the recursive let binding have been inferred, then we can `leave_scope()`. This list of declarations needs to be a `tlet_decl list`, since that's what `TELetRec` expects.
 ```ocaml
-let decls = List.map2_exn env_decls decls ~f:(
-    fun (id, VarBind ty_bind) (_, ann, rhs) ->
-        let rhs = check env' (inst ty_bind) rhs in
-        (id, ann, rhs))
+let tdecls : tlet_decl list = List.map prepared ~f:(fun (id, ann, rhs, extras, check_ty) ->
+    let trhs = check (extras @ env_with_decls) check_ty rhs in
+    (id, ann, trhs))
 in
 leave_scope();
 ```
-Now we generalize the types of all the bindings by mapping over them and calling `gen` on each one.
+Now we generalize the types of all the bindings. As with `ELet`, if there's an annotation we use it directly, otherwise we call `gen` on the inferred type.
 ```ocaml
-let generalized_bindings =
-    List.map ~f:(fun (id, _, rhs) -> (id, VarBind (gen (typ rhs)))) decls
+let generalized_bindings = List.map tdecls ~f:(fun (id, ann, rhs) ->
+    let ty_gen =
+        match ann with
+        | Some ann -> ann
+        | None -> gen (typ rhs)
+    in
+    (id, VarBind ty_gen))
 in
 ```
 Finally, we add it to the original `env` so we can use it to infer the body of the recursive let binding.
 ```ocaml
-let env = generalized_bindings @ env in
-let body = infer env body in
-TELetRec (decls, body, typ body)
+let env_body = generalized_bindings @ env in
+let body = infer env_body body in
+TELetRec (tdecls, body, typ body)
 ```
 
 Overall, our updated implementation of `ELetRec` looks like
 ```ocaml
 | ELetRec (decls, body) ->
     enter_scope();
-    let deduped_defs = Hash_set.create (module String) in
-    let env_decls = List.map decls ~f:(fun (id, ann, _) ->
-        match Hash_set.strict_add deduped_defs id with
-        | Ok _ ->
-            let ty_decl =
-                match ann with
-                | Some ann -> inst ann
-                | None -> fresh_unbound_var()
-            in (id, VarBind (dont_generalize ty_decl))
-        | Error _ -> raise (duplicate_definition id) 
-    ) in
-    let env' = env_decls @ env in
-    let decls = List.map2_exn env_decls decls ~f:(
-        fun (id, VarBind ty_bind) (_, ann, rhs) ->
-            let rhs = check env' (inst ty_bind) rhs in
-            (id, ann, rhs))
+    let prepared = List.map decls ~f:(fun (id, ann, rhs) ->
+        match ann with
+        | Some ann ->
+            let (extras, check_ty) = as_rigid ann in
+            (id, Some ann, rhs, extras, check_ty)
+        | None ->
+            (id, None, rhs, [], fresh_unbound_var ()))
+    in
+    let env_decls = List.map prepared ~f:(fun (id, _, _, _, check_ty) ->
+        (id, VarBind (dont_generalize check_ty)))
+    in
+    let env_with_decls = env_decls @ env in
+    let tdecls : tlet_decl list = List.map prepared ~f:(fun (id, ann, rhs, extras, check_ty) ->
+        let trhs = check (extras @ env_with_decls) check_ty rhs in
+        (id, ann, trhs))
     in
     leave_scope();
-    let generalized_bindings =
-        List.map ~f:(fun (id, _, rhs) -> (id, VarBind (gen (typ rhs)))) decls
+    let generalized_bindings = List.map tdecls ~f:(fun (id, ann, rhs) ->
+        let ty_gen =
+            match ann with
+            | Some ann -> ann
+            | None -> gen (typ rhs)
+        in
+        (id, VarBind ty_gen))
     in
-    let env = generalized_bindings @ env in
-    let body = infer env body in
-    TELetRec (decls, body, typ body)
+    let env_body = generalized_bindings @ env in
+    let body = infer env_body body in
+    TELetRec (tdecls, body, typ body)
 ```
 
 Woo! That was a doozy. But we got through it now. How about we take a look at some examples to celebrate?

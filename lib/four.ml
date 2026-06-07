@@ -59,7 +59,6 @@ module Four() = struct
       "(" ^ ty_debug from ^ " -> " ^ ty_debug dst ^ ")"
 
   exception Undefined of string
-  exception DuplicateDefinition of string
   exception UnificationFailure of string
   exception OccursCheck
   exception TypeError of string
@@ -70,9 +69,6 @@ module Four() = struct
 
   let undefined_error kind name =
     Undefined (Printf.sprintf "%s %s not defined" kind name)
-
-  let duplicate_definition def =
-    DuplicateDefinition (Printf.sprintf "duplicate definition of %s" def)
 
   let unify_failed t1 t2 =
     UnificationFailure
@@ -203,16 +199,12 @@ module Four() = struct
       let body = infer env body in
       TELet ((id, ann, rhs), body, typ body)
     | ELetRec (decls, body) ->
-      let deduped_defs = Hash_set.create (module String) in
       let env_decls = List.map decls ~f:(fun (id, ann, _) ->
-          match Hash_set.strict_add deduped_defs id with
-          | Ok _ ->
-              let ty_decl =
-                  match ann with
-                  | Some ann -> ann
-                  | None -> fresh_unbound_var()
-              in (id, VarBind ty_decl)
-          | Error _ -> raise (duplicate_definition id)
+          let ty_decl =
+              match ann with
+              | Some ann -> ann
+              | None -> fresh_unbound_var()
+          in (id, VarBind ty_decl)
       ) in
       let env = env_decls @ env in
       let decls : tlet_decl list = List.map2_exn env_decls decls ~f:(
