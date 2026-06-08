@@ -544,14 +544,16 @@ type prog = exp
 # Examples
 
 ```ocaml
-(* (fun x -> x) true *)
-EApp(ELam("x", EVar "x"), EBool true)
+typecheck_prog
+    (* (fun x -> x) true *)
+    (EApp(ELam("x", EVar "x"), EBool true))
 ```
 Output: `bool`
 
 ```ocaml
-(* (fun f -> f true) true *)
-EApp(ELam("f", EApp(EVar "f", EBool true)), EBool true)
+typecheck_prog
+    (* (fun f -> f true) true *)
+    (EApp(ELam("f", EApp(EVar "f", EBool true)), EBool true))
 ```
 Output: `UnificationFailure "failed to unify type bool -> ?1 with bool"`
 
@@ -717,14 +719,16 @@ Now let's test it out!
 # Examples
 
 ```ocaml
-(* let x = true in if x then false else true *)
-ELet(("x", None, EBool true), EIf(EVar "x", EBool false, EBool true))
+typecheck_prog
+    (* let x = true in if x then false else true *)
+    (ELet(("x", None, EBool true), EIf(EVar "x", EBool false, EBool true)))
 ```
 Output: `bool`
 
 ```ocaml
-(* let x : bool = fun y -> y in x *)
-ELet(("x", Some TyBool, ELam("y", EVar "y")), EVar "x")
+typecheck_prog
+    (* let x : bool = fun y -> y in x *)
+    (ELet(("x", Some TyBool, ELam("y", EVar "y")), EVar "x"))
 ```
 Output: `TypeError "expression does not have type bool"`
 
@@ -1152,7 +1156,7 @@ This says that if r is a record of type T containing a field f, then r.f has the
 # Examples
 
 ```ocaml
-typecheck_prog {|
+typecheck_source {|
     type Foo = { x : bool, y : bool -> bool }
     let foo : Foo = { x = true, y = fun x -> x } in foo.y true
 |}
@@ -1160,7 +1164,7 @@ typecheck_prog {|
 Output: `bool`
 
 ```ocaml
-typecheck_prog {|
+typecheck_source {|
     type Foo = { x : bool }
     let foo : Foo = { x = true } in { foo with y = true }
 |}
@@ -1809,61 +1813,45 @@ Woo! That was a doozy. But we got through it now. How about we take a look at so
 # Examples
 
 ```ocaml
-(* type A = {}
-   let f = fun x -> x
-   in let _ = f A{}
-   in f true *)
-(
-    [{name = "A"; ty = []}],
-    ELet(("f", None, ELam("x", EVar "x")),
-      ELet(("_", None, EApp(EVar "f", ERecord("A", []))),
-        EApp(EVar "f", EBool true)))
-)
+typecheck_source {|
+    type A = {}
+    let a : A = {} in
+    let f = fun x -> x in
+    let _ = f a in
+    f true
+|}
 ```
 Output: `bool`
 
 ```ocaml
-(* let rec fix = fun f -> fun x -> f (fix f) x in 
-   fix (fun f arg -> if arg then f false else true) *)
-(
-    [],
-    ELetRec([("fix", None, ELam("f", ELam("x", EApp(EApp(EVar "f", EApp(EVar "fix", EVar "f")), EVar "x"))))],
-      EApp(EVar "fix", ELam("f", ELam("arg", EIf(EVar "arg", EApp(EVar "f", EBool false), EBool true)))))
-)
+typecheck_source {|
+    let rec fix = fun f -> fun x -> f (fix f) x in
+    fix (fun f -> fun arg -> if arg then f false else true)
+|}
 ```
 Output: `bool -> bool`
 
 ```ocaml
-(* type A = {}
-   let f : 'a -> bool = fun x -> true
-   in f A{} *)
-(
-    [{name = "A"; ty = []}],
-    ELet(("f", Some {type_params = ["'a"]; ty = TyArrow(TyName "'a", TyBool)}, ELam("x", EBool true)),
-      EApp(EVar "f", ERecord("A", []))
-    )
-)
+typecheck_source {|
+    type A = {}
+    let a : A = {} in
+    let f : forall 'a. 'a -> bool = fun x -> true in
+    f a
+|}
 ```
 Output: `bool`
 
 ```ocaml
-(* type A = {}
-   let f : 'a -> A = fun x -> true
-   in f true *)
-(
-    [{name = "A"; ty = []}],
-    ELet(("f", Some {type_params = ["'a"]; ty = TyArrow(TyName "'a", TyName "A")}, ELam("x", EBool true)),
-      EApp(EVar "f", EBool true))
-)
+typecheck_source {|
+    type A = {}
+    let f : forall 'a. 'a -> A = fun x -> true in
+    f true
+|}
 ```
-Output: `TypeError "expression does not have type ?1 -> A"`
+Output: `TypeError "expression does not have type 'a -> A"`
 
 ```ocaml
-(* (fun x -> let y = x in y) true true *)
-(
-    [],
-    EApp(EApp(ELam("x", ELet(("y", None, EVar "x"), EVar "y")), EBool true), EBool true)
-)
+typecheck_source "(fun x -> let y = x in y) true true"
 ```
 Output: `UnificationFailure "failed to unify type bool with bool -> ?2"`
 
