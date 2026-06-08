@@ -758,9 +758,9 @@ let%test "let_gen_row" =
   expect_type "bool -> bool" {|
     type Foo = { x : bool }
     type Bar = { x : bool -> bool }
-    let f = fun r -> r.x in
     let r1 : Foo = { x = true } in
     let r2 : Bar = { x = fun y -> y } in
+    let f = fun r -> r.x in
     let _ = f r1 in
     f r2
   |}

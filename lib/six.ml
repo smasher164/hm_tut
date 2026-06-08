@@ -698,13 +698,13 @@ let%test "let_rec_rigid_error" =
 let%test "let_gen_row_monomorphism" =
   let open Six() in
   expect_raises
-    (UnificationFailure "failed to unify type bool with ?1")
+    (UnificationFailure "failed to unify type bool with ?3")
     {|
       type Foo = { x : bool }
       type Bar = { x : bool, y : bool }
-      let f = fun r -> r.x in
       let r1 : Foo = { x = true } in
       let r2 : Bar = { x = true, y = true } in
+      let f = fun r -> r.x in
       let _ = f r1 in
       f r2
     |}
