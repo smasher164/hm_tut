@@ -1855,6 +1855,24 @@ typecheck_source "(fun x -> let y = x in y) true true"
 ```
 Output: `UnificationFailure "failed to unify type bool with bool -> ?2"`
 
+# Row Polymorphism
+
+Currently, we are able to infer the types of expressions involving records, as long as they ultimately unify to some concrete type. However, one of the beautiful things about let generalization in Hindley Milner is that we can define a function without a type signature that can operate on values of different types. What if we could apply that polymorphism to records?
+
+For example, given the records
+```
+type Foo = { x : bool }
+type Bar = { x : bool -> bool }
+let r1 : Foo = { x = true } in
+let r2 : Bar = { x = fun y -> y } in
+```
+and the function
+```
+let f = fun r -> r.x in
+```
+We'd like be be able to invoke `f` on both records, that is `f r1` and `f r2`. There's no reason why `r.x` can operate on both records, since they both have fields named `x`.
+
+
 # Generic type declarations
 
 If you notice in our examples above, the type declarations in our examples are not generic. However, in languages like Java or ML, you have access to types like `List` that are instantiated with some type argument. We should extend our language to support these. We already have most of the infrastructure in place, having implemented instantiation. The first thing we'll want to do is modify our definition of `tycon` to contain type parameters.
