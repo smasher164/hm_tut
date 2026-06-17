@@ -1870,8 +1870,193 @@ and the function
 ```
 let f = fun r -> r.x in
 ```
-We'd like be be able to invoke `f` on both records, that is `f r1` and `f r2`. There's no reason why `r.x` can operate on both records, since they both have fields named `x`.
+We'd like to be able to invoke `f` on both records, that is `f r1` and `f r2`. There's no reason why `r.x` can't operate on both records, since they both have fields named `x`. Similarly with `{ r with x = true }`, the only requirement on `r` is that it contain a field `x` whose type is `bool`. How do we encode this in our type system?
 
+Recall when inferring the type of record projection, we give the record a fresh unbound type variable with an `OpenRow` constraint. We expressed to the type-checker "we don't know what record this is but we know it should contain a field named `x`." At the expression level, we've already expressed these constraints alongside `Unbound` type variables.
+
+What we want then is to take a definition like `f` and make it polymorphic over the fields of a record, a.k.a row polymorphism. We need to account for those row constraints when generalizing and instantiating types. Essentially, row polymorphism is implemented entirely at the type-machinery layer. The expression-level inference doesn't have to change at all.
+
+So if `f` were to be generalized properly here, what would be its given type? We'd want to encode that row constraint on its type variables, like `forall 'a 'b. 'a :: { x: 'b, ... } => 'a -> 'b`. The stuff after the `.` and before the `=>` is a row constraint. It corresponds to the `OpenRow` we defined earlier. It says that `'a` should be some record type that contains a field named `x`, whose type is `'b`, which we do not know since all this function does with the field is select it.
+
+Okay so given that type signature, it's clear we'll have to update `generic_ty` to hold `row_constraint`s.
+```ocaml
+type generic_ty = {
+    type_params : (id * row_constraint) list;
+    ty : ty;
+}
+```
+Similarly, we want type variables sitting in our environment to hold onto those row constraints as well.
+```ocaml
+type bind =
+    ...
+    | TypeVarBind of row_constraint
+```
+And correspondingly, we have to update the producers and consumers of `generic_ty`. Let's start with the simplest: `as_rigid`.
+```ocaml
+let as_rigid (gty: generic_ty) : env * ty =
+    let extras = List.map gty.type_params ~f:(fun (id, row) -> (id, TypeVarBind row)) in
+    (extras, gty.ty)
+```
+Next, let's update `gen`. We're going to create a small helper to map over the fields of a row constraint.
+```ocaml
+let map_row ~f row =
+    match row with
+    | NoRow -> NoRow
+    | OpenRow flds -> OpenRow (List.map flds ~f:(fun (id, ty) -> (id, f ty)))
+    | ClosedRow flds -> ClosedRow (List.map flds ~f:(fun (id, ty) -> (id, f ty)))
+```
+Now `gen` just needs to map over the row constraint to generalize unbound type variables present in the row constraint.
+```ocaml
+| TyVar ({ contents = Unbound (id, row, scope) } as tv) when scope > !current_scope ->
+    Hashtbl.set type_params ~key:id ~data:(map_row ~f:gen' row);
+```
+We also change `type_params` from a `Hash_set` to a `Hashtbl` so we can map a type variable to its row_constraint.
+
+Overall, our `gen` implementation looks like
+```ocaml
+let gen (ty: ty) : generic_ty =
+    let type_params : (id, row_constraint) Hashtbl.t = Hashtbl.create (module String) in
+    let rec gen' ty =
+        match force ty with
+        | TyVar ({ contents = Unbound (id, row, scope) } as tv) when scope > !current_scope ->
+            Hashtbl.set type_params ~key:id ~data:(map_row ~f:gen' row);
+            tv := Link (TyName id);
+            TyName id
+        | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
+        | ty -> ty
+    in
+    let ty = gen' ty in
+    let type_params =
+        Hashtbl.to_alist type_params
+        |> List.sort ~compare:(fun (a,_) (b,_) -> String.compare a b)
+    in
+    { type_params; ty }
+```
+
+Similarly, we update `inst`. After we create the table of fresh type variables and walk the type, we go back over each type parameter and, if it has a row constraint, attach the instantiated row to the fresh type variable in the table. This way the fresh type variables carry the row constraints from the generic type.
+
+Overall, our `inst` implementation looks like
+```ocaml
+let inst (gty: generic_ty) : ty =
+    let tbl = Hashtbl.create (module String) in
+    List.iter gty.type_params ~f:(fun (pid, _) ->
+        Hashtbl.set tbl ~key:pid ~data:(fresh_unbound_var ()));
+    let rec inst' ty =
+        match force ty with
+        | TyName id as ty -> (
+            match Hashtbl.find tbl id with
+            | Some tv -> tv
+            | None -> ty)
+        | TyArrow (from, dst) -> TyArrow (inst' from, inst' dst)
+        | ty -> ty
+    in
+    (* Attach the instantiated row constraint to each fresh type variable in the table. *)
+    List.iter gty.type_params ~f:(fun (pid, row) ->
+        match row with
+        | NoRow -> ()
+        | _ ->
+            match Hashtbl.find_exn tbl pid with
+            | TyVar tv ->
+                let Unbound(id, _, scope) = !tv in
+                tv := Unbound(id, map_row ~f:inst' row, scope)
+            | _ -> failwith "unreachable: tbl always holds TyVars");
+    inst' gty.ty
+```
+We now need to update `unify` to handle type variables that carry row constraints, like those in a type annotation that `as_rigid` puts in env as rigid TyNames. We need to ensure that fields in a type variable's row constraint exist in the rigid type's row constraint. We'll pull this into a helper called `check_rigid_subset`.
+If the type variable has no row constraint, it's trivially a subset of anything else.
+```ocaml
+and check_rigid_subset env tname tv_row rigid_row =
+    match tv_row, rigid_row with
+    | NoRow, _ -> ()
+    ...
+```
+If the type variable has a row but the rigid type doesn't, then the rigid type isn't record-shaped, so we throw an error.
+```ocaml
+| _, NoRow -> raise (expected_ty_error "record" tname)
+...
+```
+If the type variable has an OpenRow, we check if each of its fields exists in the rigid type's row by calling `fld_exists`, which if you recall tries to unify the field's type.
+```ocaml
+| OpenRow flds, OpenRow rigid_flds
+| OpenRow flds, ClosedRow rigid_flds ->
+    List.iter flds ~f:(fun (id, ty) ->
+    if not (fld_exists env rigid_flds id ty) then
+        raise (row_mismatch tv_row rigid_row))
+...
+```
+The catch-all covers when the type variable has a ClosedRow, which means it's a record literal that hasn't found its nominal type yet. A rigid type variable isn't a nominal type so they can't be bound.
+```ocaml
+| _ -> raise (row_mismatch tv_row rigid_row)
+```
+Overall, `check_rigid_subset` looks like
+```ocaml
+(* Check that tv_row's fields are contained within rigid_row. *)
+and check_rigid_subset env tname tv_row rigid_row =
+    match tv_row, rigid_row with
+    | NoRow, _ -> ()
+    | _, NoRow -> raise (expected_ty_error "record" tname)
+    | OpenRow flds, OpenRow rigid_flds
+    | OpenRow flds, ClosedRow rigid_flds ->
+        List.iter flds ~f:(fun (id, ty) ->
+        if not (fld_exists env rigid_flds id ty) then
+            raise (row_mismatch tv_row rigid_row))
+    | _ -> raise (row_mismatch tv_row rigid_row)
+```
+Now the `TypeVarBind` case just becomes a call to `check_rigid_subset`.
+```ocaml
+| TyVar tv, ty | ty, TyVar tv ->
+    let Unbound(_, tv_row, _) = !tv in
+    (match ty with
+    | TyName tname ->
+        (match lookup_binding tname env with
+        | TypeVarBind rigid_row -> check_rigid_subset env tname tv_row rigid_row
+        ...)
+    ...
+```
+
+Now let's look at some examples.
+
+In this example, `'r` is a rigid type variable in the environment with an OpenRow constraint `{ x : bool, ... }`. The body's `r.x` creates an OpenRow constraint `{ x : ?_ }` on `r`'s type variable. `check_rigid_subset` confirms `r`'s row is contained in `'r`'s row.
+```ocaml
+typecheck_source {|
+    type Foo = { x : bool, y : bool }
+    let get_x : forall 'r. 'r :: { x : bool, ... } => 'r -> bool =
+        fun r -> r.x
+    in
+    let foo : Foo = { x = true, y = false } in
+    get_x foo
+|}
+```
+Output: `bool`
+
+In this example, `gen` gives `f` a row-polymorphic type, a function whose input can be any record with an `x` field. Each application instantiates `f`'s type to a fresh type variable with an OpenRow constraint, which is unified with the argument.
+```ocaml
+typecheck_source {|
+    type Foo = { x : bool }
+    type Bar = { x : bool -> bool }
+    let r1 : Foo = { x = true } in
+    let r2 : Bar = { x = fun y -> y } in
+    let f = fun r -> r.x in
+    let _ = f r1 in
+    f r2
+|}
+```
+Output: `bool -> bool`
+
+In this example, `get_x`'s type is instantiated to a fresh type variable with the OpenRow constraint `{ x : bool, ... }`. That type variable is unified with `Foo`, but when unify tries to union their fields together, it finds that `Foo` doesn't have an `x` field.
+```ocaml
+typecheck_source {|
+    type Foo = { y : bool }
+    let get_x : forall 'r. 'r :: { x : bool, ... } => 'r -> bool =
+    fun r -> r.x
+    in
+    let foo : Foo = { y = true } in
+    get_x foo
+|}
+```
+Output: `RowMismatch "{x: bool, ...} and {y: bool}"`
+
+That's row polymorphism! We can write functions that are polymorphic over the record types they operate on. Note that we didn't have to touch `infer` at all. All of our changes happened with `generic_ty`, `gen`, `inst`, `unify`, plus some new helpers. This makes sense given that nothing about our expression language has changed. We just want to make our functions more generic.
 
 # Generic type declarations
 
