@@ -2074,7 +2074,7 @@ type Box<T> = {
     x: T
 }
 ```
-where `Box` is a type constructor with a single type parameter. We need some way to represent a concrete type like `Box<bool>`, which is the result of type *application. We will modify our `ty` definition to add a `TyApp` variant.
+where `Box` is a type constructor with a single type parameter. We need some way to represent a concrete type like `Box<bool>`, which is the result of type *application*. We will modify our `ty` definition to add a `TyApp` variant.
 ```ocaml
 type ty =
     ...
@@ -2108,10 +2108,57 @@ let rec occurs (src : tv ref) (ty : ty) : unit =
     | TyApp app -> List.iter app ~f:(occurs src)
     ...
 ```
+We now want to update `unify` to handle type applications. Conceptually, this is divided into two cases. The first is the case where you have two `TyApp`s and want to unify them. This is just a matter of checking that their type argument lists unify. That is, they are the same length and that each type argument of the first list unifies with the corresponding type argument of the second list.
+```ocaml
+match (t1, t2) with
+...
+| TyApp app1, TyApp app2 when List.length app1 = List.length app2 ->
+  List.iter2_exn app1 app2 ~f:(unify env)
+```
+The second case is where a type variable gets unified with a generic type, where the generic type is just some pre-declared type constructor that is possibly applied to some arguments. This case takes effect in `unify` where one of the two types is a `TyVar`.
+```ocaml
+match (t1, t2) with
+...
+| TyVar tv, ty | ty, TyVar tv ->
+  ...
+```
+This case is split so we can handle when the other `ty` is either `TyName` (has no type arguments) or a `TyApp` (has type arguments). For example, this would be the first case, where we unify `Foo` with `ClosedRow { x: bool }`.
+```
+type Foo = { x: bool }
+let foo : Foo = { x = true } in foo
+```
+And this would be the second case, where we would start with `Box bool` and `ClosedRow { x: bool }`.
+```
+type Box 'a = { x: 'a }
+let box : Box bool = { x = true } in box
+```
+However, here we want to actually apply the type. That is, we want to substitute `bool` into the argument for `Box` to get a `{ x: bool }` we can actually unify against.
+
+We define a helper `apply_tyapp` to do this for us.
+```ocaml
+let apply_tyapp env (ty : ty) : record_ty =
+    ...
+```
+
+Here's how we handle these cases under the `TyVar` branch of `unify`.
+```ocaml
+...
+let Unbound(_, tv_row, src_scope) = !tv in
+(match ty with
+| TyName tname ->
+  (match lookup_binding tname env with
+   ...
+   | TypeBind _ ->
+     let tycon_row = ClosedRow (apply_tyapp env ty) in
+     ignore (union_rows env tv_row tycon_row))
+| TyApp _ ->
+  let tycon_row = ClosedRow (apply_tyapp env ty) in
+  ignore (union_rows env tv_row tycon_row)
+```
 
 
 
-
+--- old stuff ---
 
 
 In `gen`, we add a case to `gen'` that calls `gen'` on each type in the application, returning the mapped `TyApp`.
