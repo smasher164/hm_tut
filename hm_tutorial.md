@@ -2082,7 +2082,7 @@ type ty =
 ```
 A `Box<Bool>` would be represented as `TyApp [TyName "Box"; TyBool]`.
 
-Next, we need to update our `gen`, `inst`, and `occurs` implementations to handle `TyApp`. They follow the same pattern of mapping over the `TyApp`'s list with themselves.
+Next, we need to update our `gen`, `inst`, and `occurs` implementations to handle `TyApp`. They all follow the same pattern of recursively mapping over the `TyApp`'s list.
 
 Here's `gen`:
 ```ocaml
@@ -2110,24 +2110,27 @@ let rec occurs (src : tv ref) (ty : ty) : unit =
 ```
 We now want to update `unify` to handle type applications. Conceptually, this is divided into two cases. The first is the case where you have two `TyApp`s and want to unify them. This is just a matter of checking that their type argument lists unify. That is, they are the same length and that each type argument of the first list unifies with the corresponding type argument of the second list.
 ```ocaml
-match (t1, t2) with
-...
-| TyApp app1, TyApp app2 when List.length app1 = List.length app2 ->
-  List.iter2_exn app1 app2 ~f:(unify env)
+and unify env (t1 : ty) (t2 : ty) : unit =
+    ...
+    | TyApp app1, TyApp app2 when List.length app1 = List.length app2 ->
+      List.iter2_exn app1 app2 ~f:(unify env)
+    ...
 ```
-The second case is where a type variable gets unified with a generic type, where the generic type is just some pre-declared type constructor that is possibly applied to some arguments. This case takes effect in `unify` where one of the two types is a `TyVar`.
+The second case is where a type variable gets unified with a reference to some pre-declared type constructor that is possibly applied to some arguments. This case takes effect in `unify` where one of the two types is a `TyVar`.
 ```ocaml
 match (t1, t2) with
 ...
 | TyVar tv, ty | ty, TyVar tv ->
   ...
 ```
-This case is split so we can handle when the other `ty` is either `TyName` (has no type arguments) or a `TyApp` (has type arguments). For example, this would be the first case, where we unify `Foo` with `ClosedRow { x: bool }`.
+This case is split so we can handle when the other `ty` is either `TyName` (just a type constructor's name) or `TyApp` (a type constructor applied to type arguments). For example, this would be the first case, where we'd unify `Foo` with `ClosedRow { x: bool }`.
 ```
 type Foo = { x: bool }
 let foo : Foo = { x = true } in foo
 ```
-And this would be the second case, where we would start with `Box bool` and `ClosedRow { x: bool }`.
+For `Foo`, there's nothing to apply. Its fields `{ x: bool }` are already what we want to unify against.
+
+And this would be the second case, where we'd unify `Box bool` with `ClosedRow { x: bool }`.
 ```
 type Box 'a = { x: 'a }
 let box : Box bool = { x = true } in box
@@ -2137,248 +2140,90 @@ However, here we want to actually apply the type. That is, we want to substitute
 We define a helper `apply_tyapp` to do this for us.
 ```ocaml
 let apply_tyapp env (ty : ty) : record_ty =
+    match force ty with
     ...
 ```
-
-Here's how we handle these cases under the `TyVar` branch of `unify`.
+If it's a `TyName`, there's nothing to apply. We just look the binding up in the environment, expecting a `TypeBind` holding a type constructor. Before we return its underling record fields, we validate that the type constructor's argument list is empty, since we don't want someone to be referring to a type like `Box` in an annotation without fully applying it.
 ```ocaml
+| TyName name ->
+  (match lookup_binding name env with
+  | TypeBind tc when List.is_empty tc.type_params -> tc.ty
+  | TypeBind _ -> raise (cannot_apply name)
+  | TypeVarBind _ | VarBind _ -> raise (undefined_error "type" name))
+```
+If it's a `TyApp`, we still look up the binding, but now we have to substitute all the type arguments (like `bool` in `Box bool`) for the type parameters (like `'a` in `Box 'a`) wherever they show up in the underlying record type (so `{ x : bool }` instead of `{ x : 'a }`). If you recall back in the [Instantiation](#instantiation) section, we also perform substitution on types. Turns out, if we create a hash table mapping from the type parameters to their corresponding type arguments, we can use the same exact logic for substitution here. Let's first avoid some duplication by extracting out the substitution logic in a helper (`inst` now calls `substitute` instead of `inst'`).
+```ocaml
+let rec substitute (tbl : (id, ty) Hashtbl.t) (ty : ty) : ty =
+    match force ty with
+    | TyName id as ty ->
+        (match Hashtbl.find tbl id with
+        | Some t -> t
+        | None -> ty)
+    | TyArrow (from, dst) -> TyArrow (substitute tbl from, substitute tbl dst)
+    | TyApp app -> TyApp (List.map app ~f:(substitute tbl))
+    | ty -> ty
+```
+And our type application logic just maps over the record fields of a type constructor, and substitutes each field's type using our table, returning the resultant record.
+```ocaml
+| TyApp (TyName name :: args) ->
+  (match lookup_binding name env with
+  | TypeBind tc ->
+    (match List.zip tc.type_params args with
+     | Ok pairs ->
+       let tbl = Hashtbl.of_alist_exn (module String) pairs in
+       List.map tc.ty ~f:(fun (id, t) -> (id, substitute tbl t))
+     | Unequal_lengths -> raise (cannot_apply name))
+  | TypeVarBind _ | VarBind _ -> raise (undefined_error "type" name))
+```
+Finally, if we don't see a `TyName` or `TyApp`, we throw an error.
+```ocaml
+| _ -> failwith "apply_tyapp: expected TyName or TyApp"
+```
+Overall, our `apply_tyapp` function looks like
+```ocaml
+let apply_tyapp env (ty : ty) : record_ty =
+    match force ty with
+    | TyName name ->
+        (match lookup_binding name env with
+        | TypeBind tc when List.is_empty tc.type_params -> tc.ty
+        | TypeBind _ -> raise (cannot_apply name)
+        | TypeVarBind _ | VarBind _ -> raise (undefined_error "type" name))
+    | TyApp (TyName name :: args) ->
+        (match lookup_binding name env with
+        | TypeBind tc ->
+            (match List.zip tc.type_params args with
+            | Ok pairs ->
+            let tbl = Hashtbl.of_alist_exn (module String) pairs in
+            List.map tc.ty ~f:(fun (id, t) -> (id, substitute tbl t))
+            | Unequal_lengths -> raise (cannot_apply name))
+        | TypeVarBind _ | VarBind _ -> raise (undefined_error "type" name))
+    | _ -> failwith "apply_tyapp: expected TyName or TyApp"
+```
+That might've seemed like a long detour but let's reorient ourselves. We're back to updating `unify` under the `TyVar` branch. We want to handle the cases where the other type is a `TyName` or `TyApp` corresponding to some type constructor.
+
+Here's how we handle these cases:
+```ocaml
+match (t1, t2) with
 ...
-let Unbound(_, tv_row, src_scope) = !tv in
-(match ty with
-| TyName tname ->
-  (match lookup_binding tname env with
-   ...
-   | TypeBind _ ->
+| TyVar tv, ty | ty, TyVar tv ->
+  let Unbound(_, tv_row, src_scope) = !tv in
+  (match ty with
+   | TyName tname ->
+     (match lookup_binding tname env with
+      ...
+      | TypeBind _ ->
+        let tycon_row = ClosedRow (apply_tyapp env ty) in
+        ignore (union_rows env tv_row tycon_row))
+   | TyApp _ ->
      let tycon_row = ClosedRow (apply_tyapp env ty) in
-     ignore (union_rows env tv_row tycon_row))
-| TyApp _ ->
-  let tycon_row = ClosedRow (apply_tyapp env ty) in
-  ignore (union_rows env tv_row tycon_row)
+     ignore (union_rows env tv_row tycon_row)
 ```
+We apply the type to get its underlying record type and union its row constraints with those of our type variable that we're unifying.
 
 
+### Examples
 
---- old stuff ---
 
-
-In `gen`, we add a case to `gen'` that calls `gen'` on each type in the application, returning the mapped `TyApp`.
-```ocaml
-| TyApp app ->
-    let app = List.map app ~f:gen' in
-    TyApp app
-```
-
-In `unify`, we add a case where if `t1` and `t2` are `TyApp`s that have the same length, we zip over the application lists and call `unify` on each pair of types.
-```ocaml
-| TyApp app1, TyApp app2 when List.length app1 = List.length app2 ->
-    (* If both types are type applications, unify their corresponding types
-       with each other. *)
-    List.iter2_exn app1 app2 ~f:unify
-```
-
-In `occurs`, we add a case where we iterate over the types in a `TyApp` and check whether `src` occurs in each one.
-```ocaml
-| TyApp app ->
-    (* Check that src occurs in the type application. *)
-    List.iter app ~f:(occurs src)
-```
-
-Note that we haven't updated `inst`, not because we don't have to, but because `inst` will need some additional changes as we'll see.
-
-Let's consider what we'd have to change in our type inference logic. In the `ERecord` case, after we `lookup_tycon` for the record's type name, we can no longer directly turn the type constructor into a `TyRecord` by creating one with the same name.
-
-The type constructor could have type parameters, in which case we have to instantiate it by creating a `TyApp` with fresh type variables for its arguments.
-```ocaml
-(* Instantiate the type constructor into a type with fresh unbound
-   variables. *)
-let ty_app = inst_tycon tc in
-```
-Then we have to *apply* that `TyApp` to get the `TyRecord`.
-```ocaml
-(* Apply the type application to get a concrete record type that we can
-   unify. *)
-let ty_dec = apply_type env ty_app in
-```
-The type we return up in the `ERecord` case is no longer just a `TyName`, but whatever `ty_app` is, which could be a `TyName` (in case the type constructor has no type parameters) or a `TyApp`.
-
-The `ERecord` case now looks like
-```ocaml
-| ERecord (tname, rec_lit) ->
-    (* Look up the declared type constructor for the type name on the record
-       literal. *)
-    let tc = lookup_tycon tname env in
-    (* Instantiate the type constructor into a type with fresh unbound
-       variables. *)
-    let ty_app = inst_tycon tc in
-    (* Apply the type application to get a concrete record type that we can
-       unify. *)
-    let ty_dec = apply_type env ty_app in
-    (* Check that the record literal matches the declared record type,
-       and obtain all the typed fields. *)
-    let TERecord (_, rec_lit, _) = check env ty_dec exp in
-    (* Return the expression with its type as a TyName or a TyApp. *)
-    TERecord (tname, rec_lit, ty_app)
-```
-In the `EProj` case, the inferred type of `rcd` could be a `TyApp`, so we should apply its type to its type arguments to get the `TyRecord`.
-```ocaml
-(* Concretize the type in case it's a type application. *)
-let TyRecord(tname, rec_ty) = apply_type env (typ rcd) in
-```
-The `EProj` case now looks like
-```ocaml
-| EProj (rcd, fld) ->
-    (* Infer the type of the expression we're projecting on. *)
-    let rcd = infer env rcd in
-    (* Concretize the type in case it's a type application. *)
-    let TyRecord(tname, rec_ty) = apply_type env (typ rcd) in
-    (* Check that it has the field we're accessing. *)
-    (match List.Assoc.find rec_ty ~equal fld with
-    (* Return the field's type in the record. *)
-    | Some ty -> TEProj (rcd, fld, ty)
-    | _ -> raise (missing_field fld tname))
-```
-
-With these cases updated, we should take a look at `inst_tycon` and `apply_type`.
-
-With `inst_tycon` we want to instantiate a `tycon` (type constructor) into a `ty`. If it has no type parameters, then just return its `TyName`. If it *does* have type paramters, map over them to build up a list of fresh unbound type variables for each one, returning a `TyApp` with them as the arguments.
-```ocaml
-let inst_tycon (tc: tycon) : ty =
-    (* No type parameters, so all we need is the type name. *)
-    if List.is_empty tc.type_params then TyName tc.name
-    else
-        (* Map over the type parameters to build up a TyApp with fresh unbound
-           variables. *)
-        TyApp
-            (TyName tc.name
-            :: List.map tc.type_params ~f:(fun _ -> fresh_unbound_var ()))
-```
-
-`apply_type`, on the other hand, takes either a `TyName` or `TyApp` and returns a `TyRecord`. We need an `env` here, since we'll need to look up the type constructor based on the type name.
-```ocaml
-let apply_type (env: env) (ty: ty) : ty =
-    match ty with
-    | TyName id -> ...
-    | TyApp (TyName id :: type_args) -> ...
-    | _ -> failwith "expected TyName or TyApp"
-```
-In the `TyName` case, there's nothing to apply, so we just look up the type constructor and return the underlying record type. (This is essentially what our old code for `ERecord`/`EProj` did).
-```ocaml
-| TyName id ->
-    let tc = lookup_tycon id env in
-    TyRecord (tc.name, tc.ty)
-```
-The `TyApp` case is more interesting, and we'll have to modify our `inst` function to make it work. We still look up the type constructor.
-```ocaml
-| TyApp (TyName id :: type_args) ->
-    let tc = lookup_tycon id env in
-    ...
-```
-But this time, we take the `type_params` list in the `tycon`, zip it with `type_args` of the `TyApp` we matched against, and build a hash table associating each type parameter with the corresponding type argument.
-```ocaml
-let tbl =
-    match List.zip tc.type_params type_args with
-    | Ok alist -> Hashtbl.of_alist_exn (module String) alist
-    | Unequal_lengths ->
-        failwith "incorrect number of arguments in type application"
-in
-```
-Finally, and here's the key idea, we build a `generic_ty` with the `type_params` list from the type constructor and a `TyRecord` as its underlying type, and use the `tbl` we built to instantiate it, i.e. substitute occurrences of `type_params` with the `type_args`.
-```ocaml
-inst ~tbl
-    { type_params = tc.type_params; ty = TyRecord (tc.name, tc.ty) }
-```
-Notice that we are reusing our `inst` function to instantiate this generic type. Calling it will return an instantiated `TyRecord`, which is the result of applying this type.
-
-However, our current definition of `inst` doesn't take a `tbl` argument. Let's change that. Let's go back to our definition of `inst`, and change its signature to
-```ocaml
-let inst ?(tbl: (id, ty) Hashtbl.t option) (gty: generic_ty) : ty =
-```
-Here, we've added an optional parameter `tbl`. This means that if a `tbl` is provided, we will use it. Otherwise, construct a table with fresh type variables like we did before with `create_table_for_type_params`.
-```ocaml
-let tbl =
-    (* If a hash table is provided, use it. Otherwise, create a new one. *)
-    match tbl with
-    | None -> create_table_for_type_params gty.type_params
-    | Some tbl -> tbl
-in
-```
-The nice thing here is that none of our calls to `inst` need to be updated, since the argument is optional.
-
-Finally, we need to add one extra case to our `inst'` helper to instantiate the type variables in a type application.
-```ocaml
-| TyApp app ->
-    (* Instantiate the type vars in the type application. *)
-    TyApp (List.map app ~f:inst')
-```
-Overall, our `inst` implementation looks like
-```ocaml
-let inst ?(tbl: (id, ty) Hashtbl.t option) (gty: generic_ty) : ty =
-    let tbl =
-        match tbl with
-        | None -> create_table_for_type_params gty.type_params
-        | Some tbl -> tbl
-    in
-    let rec inst' (ty: ty) =
-        match force ty with
-        | TyName id as ty -> (
-            match Hashtbl.find tbl id with
-            | Some tv -> tv
-            | None -> ty)
-        | TyArrow (from, dst) ->
-            let from_inst = inst' from in
-            let dst_inst = inst' dst in
-            TyArrow (from_inst, dst_inst)
-        | TyRecord (id, flds) ->
-            let inst_fld (id, ty) = (id, inst' ty) in
-            TyRecord (id, List.map ~f:inst_fld flds)
-        | TyApp app ->
-            TyApp (List.map app ~f:inst')
-        | ty -> ty
-    in
-    if Hashtbl.is_empty tbl then gty.ty else inst' gty.ty
-```
-
-And with `inst` updated, `apply_type` will work, and so will our `ERecord` and `EProj` cases that we updated to handle generic type constructors.
-
-Let's test it out with some examples.
-
-# Examples
-
-```ocaml
-(* type box 'a = { x: 'a }
-   let r = box{x = true} in r *)
-(
-    [{name = "box"; type_params = ["'a"]; ty = [("x", TyName "'a")]}],
-    ELet(("r", None, ERecord("box", [("x", EBool true)])), EVar "r")
-)
-```
-Output: `box bool`
-
-```ocaml
-(* type box 'a = { x: 'a }
-  let f = fun v ->
-    let r = box{x = box{x = v}}
-    in r.x
-  in f true *)
-(
-    [{name = "box"; type_params = ["'a"]; ty = [("x", TyName "'a")]}],
-    ELet(("f", None, ELam("v",
-      ELet(("r", None, ERecord("box", [("x", ERecord("box", [("x", EVar "v")]))])),
-        EProj(EVar "r", "x")))),
-      EApp(EVar "f", EBool true))
-)
-```
-Output: `box bool`
-
-```ocaml
-(* type box 'a = { x: box 'a, y: bool }
-   box{x = true}.x *)
-(
-    [{name = "box"; type_params = ["'a"]; ty = [("x", TyName "'a"); ("y", TyBool)]}],
-    EProj(ERecord("box", [("x", EBool true)]), "x")
-)
-```
-Output: `TypeError "expression does not have type box{x: ?0, y: bool}"`
 
 # Side-effects
 

@@ -212,19 +212,19 @@ module Eight() = struct
     | OpenRow flds -> OpenRow (List.map flds ~f:(fun (id, ty) -> (id, f ty)))
     | ClosedRow flds -> ClosedRow (List.map flds ~f:(fun (id, ty) -> (id, f ty)))
 
+  (* Walk a type, replacing any TyName whose id appears in tbl with the
+     corresponding entry. *)
+  let rec substitute (tbl : (id, ty) Hashtbl.t) (ty : ty) : ty =
+    match force ty with
+    | TyName id as ty ->
+      (match Hashtbl.find tbl id with
+       | Some t -> t
+       | None -> ty)
+    | TyArrow (from, dst) -> TyArrow (substitute tbl from, substitute tbl dst)
+    | TyApp app -> TyApp (List.map app ~f:(substitute tbl))
+    | ty -> ty
+
   let apply_tyapp env (ty : ty) : record_ty =
-    let substitute (tbl : (id, ty) Hashtbl.t) (ty : ty) : ty =
-      let rec sub ty =
-        match force ty with
-        | TyName id as ty ->
-          (match Hashtbl.find tbl id with
-           | Some t -> t
-           | None -> ty)
-        | TyArrow (from, dst) -> TyArrow (sub from, sub dst)
-        | TyApp app -> TyApp (List.map app ~f:sub)
-        | ty -> ty
-      in sub ty
-    in
     match force ty with
     | TyName name ->
       (match lookup_binding name env with
@@ -381,16 +381,6 @@ module Eight() = struct
     let tbl = Hashtbl.create (module String) in
     List.iter gty.type_params ~f:(fun (pid, _) ->
       Hashtbl.set tbl ~key:pid ~data:(fresh_unbound_var ()));
-    let rec inst' ty =
-      match force ty with
-      | TyName id as ty -> (
-        match Hashtbl.find tbl id with
-        | Some tv -> tv
-        | None -> ty)
-      | TyArrow (from, dst) -> TyArrow (inst' from, inst' dst)
-      | TyApp app -> TyApp (List.map app ~f:inst')
-      | ty -> ty
-    in
     (* Attach the instantiated row constraint to each fresh type variable in the table. *)
     List.iter gty.type_params ~f:(fun (pid, row) ->
       match row with
@@ -398,8 +388,8 @@ module Eight() = struct
       | _ ->
         let TyVar tv = Hashtbl.find_exn tbl pid in
         let Unbound(id, _, scope) = !tv in
-        tv := Unbound(id, map_row ~f:inst' row, scope));
-    inst' gty.ty
+        tv := Unbound(id, map_row ~f:(substitute tbl) row, scope));
+    substitute tbl gty.ty
 
   (* Turn a generic_ty into its rigid form, so that when annotations are instantiated,
      they don't produce Unbound type variables that can unify with each other.*)
