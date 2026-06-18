@@ -2060,7 +2060,7 @@ That's row polymorphism! We can write functions that are polymorphic over the re
 
 # Generic type declarations
 
-If you notice in our examples above, the type declarations in our examples are not generic. However, in languages like Java or ML, you have access to types like `List` that are instantiated with some type argument. We should extend our language to support these. We already have most of the infrastructure in place, having implemented instantiation. The first thing we'll want to do is modify our definition of `tycon` to contain type parameters.
+You'll notice in our examples above, the type declarations are not generic. However, in languages like Java or ML, you have access to types like `List` that are instantiated with some type argument. Similarly to row polymorphism, we won't need to change anything about our expression-level inference. All of the work happens at the level of gen, inst, unify, and occurs. The first thing we'll want to do is modify our definition of `tycon` to contain type parameters.
 ```ocaml
 type tycon = {
     name : id;
@@ -2068,24 +2068,51 @@ type tycon = {
     ty : record_ty;
 }
 ```
-If you remember with our nominally typed records, we ensured that `ERecord` always returned a `TyName`, and `EProj` grabbed the `TyRecord` given a `TyName` to look for a field. Once we allow type constructors to be generic, we not only have `TyName`s but `TyApp`s (type applications). For example
+This allows us to write definitions like
 ```
 type Box<T> = {
     x: T
 }
 ```
-is a type constructor with a single type parameter. For an expression like `Box{x = true}`, we want the inferred type in `ERecord` to be `Box<Bool>`. If there's an `EProj` expression like `Box{x=true}.x`, `EProj` would see a `Box<Bool>`, turn it into a `TyRecord`, and access the `x` field.
-
-To represent types like `Box<Bool>`, we will modify our `ty` definition to add a `TyApp` variant.
-
+where `Box` is a type constructor with a single type parameter. We need some way to represent a concrete type like `Box<bool>`, which is the result of type *application. We will modify our `ty` definition to add a `TyApp` variant.
 ```ocaml
 type ty =
     ...
-    | TyApp of ty list (* Type application: T1 T2 *)
+    | TyApp of ty list (* Type application: head :: args, e.g. TyApp[TyName "box"; TyBool] *)
 ```
 A `Box<Bool>` would be represented as `TyApp [TyName "Box"; TyBool]`.
 
-Next, we need to update our `gen`, `unify`, and `occurs` implementations to handle `TyApp`.
+Next, we need to update our `gen`, `inst`, and `occurs` implementations to handle `TyApp`. They follow the same pattern of mapping over the `TyApp`'s list with themselves.
+
+Here's `gen`:
+```ocaml
+let rec gen' ty =
+    match force ty with
+    ...
+    | TyApp app -> TyApp (List.map app ~f:gen')
+    ...
+```
+Here's `inst`:
+```ocaml
+let rec inst' ty =
+    match force ty with
+    ...
+    | TyApp app -> TyApp (List.map app ~f:inst')
+    ...
+```
+And here's `occurs`:
+```ocaml
+let rec occurs (src : tv ref) (ty : ty) : unit =
+    match force ty with
+    ...
+    | TyApp app -> List.iter app ~f:(occurs src)
+    ...
+```
+
+
+
+
+
 
 In `gen`, we add a case to `gen'` that calls `gen'` on each type in the application, returning the mapped `TyApp`.
 ```ocaml

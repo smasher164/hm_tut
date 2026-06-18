@@ -144,6 +144,9 @@ module Eight() = struct
   let row_mismatch row1 row2 =
     RowMismatch (Printf.sprintf "%s and %s" (print_row ty_pretty row1) (print_row ty_pretty row2))
 
+  let cannot_apply name =
+    UnificationFailure (Printf.sprintf "cannot apply %s" name)
+
   (* Lookup a variable's type in the environment. *)
   let lookup_var_type name (e : env) : generic_ty =
     match List.Assoc.find e ~equal name with
@@ -209,7 +212,7 @@ module Eight() = struct
     | OpenRow flds -> OpenRow (List.map flds ~f:(fun (id, ty) -> (id, f ty)))
     | ClosedRow flds -> ClosedRow (List.map flds ~f:(fun (id, ty) -> (id, f ty)))
 
-  let apply_tyapp env (ty : ty) : record_ty option =
+  let apply_tyapp env (ty : ty) : record_ty =
     let substitute (tbl : (id, ty) Hashtbl.t) (ty : ty) : ty =
       let rec sub ty =
         match force ty with
@@ -223,16 +226,21 @@ module Eight() = struct
       in sub ty
     in
     match force ty with
+    | TyName name ->
+      (match lookup_binding name env with
+       | TypeBind tc when List.is_empty tc.type_params -> tc.ty
+       | TypeBind _ -> raise (cannot_apply name)
+       | TypeVarBind _ | VarBind _ -> raise (undefined_error "type" name))
     | TyApp (TyName name :: args) ->
       (match lookup_binding name env with
        | TypeBind tc ->
          (match List.zip tc.type_params args with
           | Ok pairs ->
             let tbl = Hashtbl.of_alist_exn (module String) pairs in
-            Some (List.map tc.ty ~f:(fun (id, t) -> (id, substitute tbl t)))
-          | Unequal_lengths -> None)
+            List.map tc.ty ~f:(fun (id, t) -> (id, substitute tbl t))
+          | Unequal_lengths -> raise (cannot_apply name))
        | TypeVarBind _ | VarBind _ -> raise (undefined_error "type" name))
-    | _ -> None
+    | _ -> failwith "apply_tyapp: expected TyName or TyApp"
 
   let rec union_rows env (row_a: row_constraint) (row_b: row_constraint) : row_constraint =
     match (row_a, row_b) with
@@ -309,14 +317,13 @@ module Eight() = struct
       | TyName tname ->
         (match lookup_binding tname env with
          | TypeVarBind rigid_row -> check_rigid_subset env tname tv_row rigid_row
-         | TypeBind tc when List.is_empty tc.type_params ->
-           ignore (union_rows env tv_row (ClosedRow tc.ty))
-         | TypeBind _ -> raise (unify_failed t1 t2)
-         | VarBind _ -> raise (undefined_error "type" tname))
+         | VarBind _ -> raise (undefined_error "type" tname)
+         | TypeBind _ ->
+           let tycon_row = ClosedRow (apply_tyapp env ty) in
+           ignore (union_rows env tv_row tycon_row))
       | TyApp _ ->
-        (match apply_tyapp env ty with
-         | Some flds -> ignore (union_rows env tv_row (ClosedRow flds))
-         | None -> raise (unify_failed t1 t2))
+        let tycon_row = ClosedRow (apply_tyapp env ty) in
+        ignore (union_rows env tv_row tycon_row)
       | TyVar other when not (phys_equal tv other) ->
         (* Union the rows of these two distinct type variables, and lower
           the surviving tvar's scope to the minimum. *)
