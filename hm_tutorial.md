@@ -2220,10 +2220,35 @@ match (t1, t2) with
 ```
 We apply the type to get its underlying record type and union its row constraints with those of our type variable that we're unifying.
 
+And so ends our process of typechecking generic type declarations! Let's look at some examples.
 
-### Examples
+Here's the `box bool` example from earlier. `{ x = true }` is inferred as a `ClosedRow { x : bool }` that's checked against the annotation. `apply_tyapp` takes `box` and substitutes `bool` for `'a` in its body, giving us `{ x : bool }`, which matches that closed row constraint.
+```ocaml
+typecheck_source {|
+    type box 'a = { x : 'a }
+    let r : box bool = { x = true } in r.x
+|}
+```
+Output: `bool`
 
+Here's an identity function of the type `forall 'a. box 'a -> box 'a`. It gets instantiated to `box ?0 -> box ?0`, so when it's applied to `r`, `box ?0` gets unified with `box bool`. This will hit the `(TyApp, TyApp)` case of our `unify`.
+```ocaml
+typecheck_source {|
+    type box 'a = { x : 'a }
+    let identity : forall 'a. box 'a -> box 'a = fun b -> b in
+    identity (let r : box bool = { x = true } in r)
+|}
+```
+Output: `box bool`
 
+Here's a case where the literal's fields don't match the type constructor's. `box` requires `x` and `y`, but the literal only provides `x`. Going through the same route as before in `apply_tyapp`, we find that `{ x : bool, y : bool }` doesn't unify with `ClosedRow { x : bool }`, so we raise a `RowMismatch`.
+```ocaml
+typecheck_source {|
+    type box 'a = { x : 'a, y : bool }
+    let r : box bool = { x = true } in r.x
+|}
+```
+Output: `RowMismatch "{x: bool} and {x: bool, y: bool}"`
 
 # Side-effects
 
