@@ -2252,7 +2252,7 @@ Output: `RowMismatch "{x: bool} and {x: bool, y: bool}"`
 
 # Side-effects
 
-Up until now, this language has been pure. You would think adding features like mutability and other side-effects would not be a problem for a polymorphic type system like ours. However, there are gotchas. Let's say we added mutability to our language with a `Ref 'a` type. For example, `Ref int` corresponds to a memory location containing an `int` value. A `Ref 'a` can be built with a `ref` function, whose type is `forall 'a. 'a -> Ref 'a`. You can retrieve the value at a `Ref 'a` via `deref`, whose type is `forall 'a. Ref 'a -> 'a`. A shorthand operator for this is `*r`, where `r` is the name of the reference. Finally, you can update the value at an existing memory location via `update`, whose type is `forall 'a. Ref 'a -> 'a -> ()`. We haven't explicitly mentioned this before, but `()` is the "unit" type. You can think of it like an empty record or tuple. A shorthand syntax for this operation is `*r = v`, where `r` is the name of the reference and `v` is the value being stored.
+Up until now, this language has been pure. You would think adding features like mutability and other side-effects would not be a problem for a polymorphic type system like ours. However, there are gotchas. Let's say we added mutability to our language with a `Ref 'a` type. For example, `Ref int` corresponds to a memory location containing an `int` value. A `Ref 'a` can be built with a `ref` function, whose type is `forall 'a. 'a -> Ref 'a`. You can retrieve the value at a `Ref 'a` via `deref`, whose type is `forall 'a. Ref 'a -> 'a`. A shorthand operator for this is `*r`, where `r` is the name of the reference. Finally, you can update the value at an existing memory location via `update`, whose type is `forall 'a. Ref 'a -> 'a -> Unit` (`Unit` is just an empty record type). A shorthand syntax for this operation is `*r = v`, where `r` is the name of the reference and `v` is the value being stored.
 
 So for example,
 ```
@@ -2265,15 +2265,16 @@ this program would create a reference to a memory location containing an integer
 type A = {}
 let r = ref (fun x -> true) in
 *r = fun x -> if x then false else true;
-(*r) A{}
+let a : A = {} in
+(*r) a
 ```
 In this example, we create a reference to a lambda and then generalize it. `r` would have the generic type `forall 'a. Ref('a -> bool)`. The third line instantiates the generic type to be `Ref(?0 -> bool)` and unifies `?0 -> bool` with the right-hand-side, whose type is `bool -> bool`. All well and good.
 
-Now comes a problem. The last line again instantiates the generic type to get `Ref(?1 -> bool)`, dereferences it, and applies the lambda to `A{}`. The type-checker accepts this program.
+Now comes a problem. The last line again instantiates the generic type to get `Ref(?1 -> bool)`, dereferences it, and applies the lambda to `a`. The type-checker accepts this program.
 
-However, if we actually run this, the third line stores a lambda that accepts a `bool`ean condition and does `if condition then ...` to it. And the fourth line invokes that lambda on a value of type `A`. But `A` is not a `bool`!
+However, if we actually run this, the third line stores a lambda that accepts a `bool`ean condition and does `if condition then ...` to it. And the fifth line invokes that lambda on a value of type `A`. But `A` is not a `bool`!
 
-What we learn from this example is that by generalizing a variable that is mutable, each instantiation gets to ignore changes to the type that other updates made to that memory location. We don't want that, because it means our program is not type-safe! In other words, the evaluator of this language would reach an invalid state at runtime when it tries to do `if A{} then ...`, since `A` is not `bool`.
+What we learn from this example is that by generalizing a variable that is mutable, each instantiation gets to ignore changes to the type that other updates made to that memory location. We don't want that, because it means our program is not type-safe! In other words, the evaluator of this language would reach an invalid state at runtime when it tries to do `if a then ...`, since `A` is not `bool`.
 
 What can we do about this? The immediate answer is to not generalize expressions like `ref <exp>`, so we just end up with `r`'s type as `Ref(?0 -> bool)`. Then when the third line updates the location to hold `bool -> bool`, that information gets carried into the last line, where we try to unify `bool -> bool` with `A -> ?1` and fail.
 
@@ -2283,119 +2284,72 @@ This is called the *syntactic* value restriction. It is the criterion Standard M
 
 There are other approaches here, including OCaml's that does a deeper syntactic check to allow nested let bindings, record projection, some lambda applications, etc... Other approaches incude changing our evaluation model from eager to lazy, analyzing the bodies of functions being applied to see if there are observable side effects, using an effect system to track effects of expressions, etc... That last one (which Koka employs) is kind of the ultimate solution to the problem, because we get precise tracking at the type-level for expressions that don't perform side effects and can be generalized. However, discussing effect systems is outside the scope of this article, and restricting generalization to syntactic values turns out to not be a problem in practice.
 
-Let's take a look at how we can modify `infer` to implement the value restriction.
-We'll start with the `ELet` case. Where we previously just called `gen` on the type of the `rhs`, we now insert a check to see if the `rhs` is syntactically a value.
+Aside: Stephen Dolan recently took a different approach in [Rethinking the Value Restriction](https://www.youtube.com/watch?v=C1g_PO_xcI8) that supports full rank-1 types in ML, restricts generalization to lambda abstractions, and lazily instantiates foralls only when forced to by application or projection. There is some nuance around covariance annotations and curried functions, but consider taking a look at this talk!
 
-```ocaml
-let ty_gen = if is_value rhs
-    then gen (typ rhs)
-    else dont_generalize (typ rhs) 
-in
-```
+Let's take a look at how we can modify `infer` to implement the value restriction. We'll start with `is_value`, a helper that determines if a typed expression is syntactically a value.
 
-Now let's write the `is_value` function to determine if an expression is syntactically a value.
 ```ocaml
 let rec is_value (x: texp) : bool =
     match x with
     | TEBool _ | TEVar _ | TELam _ -> true
-    | TERecord (_, rec_lit, _) -> List.for_all rec_lit ~f:(fun (_, fld) -> is_value fld)
-    | TEApp _ | TEIf _ | TEProj _ | TELet _ | TELetRec _ -> false
+    | TERecord (rec_lit, _) -> List.for_all rec_lit ~f:(fun (_, fld) -> is_value fld)
+    | TEWith _ | TEApp _ | TEIf _ | TEProj _ | TELet _ | TELetRec _ -> false
 ```
-As you can see, the only complicated case is `TERecord` where we check that all of its fields are also values.
+The only interesting case is `TERecord`, where we check that all of its fields are also values.
 
-Similarly, we update our `ELetRec` case. Where we previously mapped over the bindings to generalize them, we just check if their right-hand-side is syntactically a value.
+Next, let's write `generalize_if_value`, a helper that wraps `gen` so we only generalize when the `rhs` is a value. Otherwise, we fall back to `dont_generalize`.
+
 ```ocaml
-let generalized_bindings =
-    List.map ~f:(fun (id, _, rhs) ->
-        let ty_gen = if is_value rhs
-            then gen (typ rhs)
-            else dont_generalize (typ rhs) 
-        in (id, VarBind ty_gen)) decls
-in
+let generalize_if_value rhs : generic_ty =
+    if is_value rhs then gen (typ rhs)
+    else dont_generalize (typ rhs)
+```
+
+Now in our `ELet` case, the `None` branch where we previously called `gen (typ rhs)` becomes:
+
+```ocaml
+| None -> generalize_if_value rhs
+```
+
+The `ELetRec` case gets the same treatment in the `List.map` that produces `generalized_bindings`. The `None` branch where we previously called `gen (typ rhs)` becomes:
+
+```ocaml
+| None -> generalize_if_value rhs
 ```
 
 Putting this all together, we have implemented the value restriction. If we added `ref`, `deref`, and `update` built-ins, our language would correctly handle mutability.
 
 # Example
 
-We can simulate the example from before with our type-checker. We just need to add definitions and signatures for `Ref`, `ref`, `deref`, and `update`. We won't really be able to implement `update` without an actual memory store, so we can just return `Unit` for now. Notice that in order to access a field from the generic struct `Ref 'a`, we add a nested let binding with `forall 'a. Ref 'a` as its annotation. This is needed so `r.value` has access to `r`'s type in the `EProj` case of `infer`.
+We can simulate the example from before with our type-checker. We add definitions and signatures for `Ref`, `ref`, `deref`, and `update`. We can't really implement `update` without an actual memory store, so we just return an empty `Unit` record.
 
-The actual AST for this example is quite gnarly, but be happy you didn't have to write it! :)
+Because of the value restriction, `r` doesn't get generalized, and so `update` knows the type in the ref is just `bool -> bool`. When we try to apply the dereferenced value to a `Unit`, it now fails to typecheck as expected.
 ```ocaml
-(* type Ref 'a = {
-       value: 'a
-   }
-   type Unit = {}
-   let ref = fun x -> Ref { value = x } in
-   let deref = fun r ->
-       let r : forall 'a. Ref 'a = r
-       in r.value
-   in
-   let update : forall 'a. Ref 'a -> 'a -> Unit = fun r -> fun x -> Unit{}
-   let r = ref (fun x -> true) in
-   let _ = update r (fun x -> if x then false else true) in
-   (deref r) Unit{}
-*)
-
-(
-    [
-      {name = "Ref"; type_params = ["'a"]; ty = [("value", TyName "'a")]};
-      {name = "Unit"; type_params = []; ty = []}
-    ],
-    ELet(("ref", None, ELam("x", ERecord("Ref", [("value", EVar "x")]))),
-    ELet(("deref", None, ELam("r", 
-      ELet(("r", 
-        Some { type_params = ["'a"]; ty = TyApp[TyName "Ref"; TyName "'a"] },
-        EVar "r"),
-      EProj(EVar "r", "value")))),
-    ELet(("update", Some {type_params = ["'a"]; ty =
-      TyArrow(
-        TyApp[TyName "Ref"; TyName "'a"],
-        TyArrow(TyName "'a", TyName "Unit"))},
-      ELam("r", ELam("x", ERecord("Unit", [])))),
-    ELet(("r", None, EApp(EVar "ref", ELam("x", EBool true))),
-    ELet(("_", None, EApp(EApp(EVar "update", EVar "r"),
-      ELam("x", EIf(EVar "x", EBool false, EBool true)))),
-    EApp(EApp(EVar "deref", EVar "r"), ERecord("Unit", [])))))))
-)
+typecheck_source {|
+    type Ref 'a = { value : 'a }
+    type Unit = {}
+    let ref : forall 'a. 'a -> Ref 'a = fun x -> { value = x } in
+    let deref : forall 'a. Ref 'a -> 'a = fun r -> r.value in
+    let update : forall 'a. Ref 'a -> 'a -> Unit = fun r -> fun x -> {} in
+    let r = ref (fun x -> x) in
+    let _ = update r (fun x -> if x then false else true) in
+    let u : Unit = {} in
+    deref r u
+|}
 ```
+Output: `UnificationFailure "failed to unify type bool with Unit"`
 
-Similarly, here is how it looks being used successfully.
+And here's how it looks being used successfully.
 ```ocaml
-(* type Ref 'a = {
-       value: 'a
-   }
-   type Unit = {}
-   let ref = fun x -> Ref { value = x } in
-   let deref = fun r ->
-       let r : forall 'a. Ref 'a = r
-       in r.value
-   in
-   let update : forall 'a. Ref 'a -> 'a -> Unit = fun r -> fun x -> Unit{}
-   let r = ref (fun x -> true) in
-   let _ = update r (fun x -> if x then false else true) in
-   update r (fun x -> false)
-*)
-
-(
-    [
-      {name = "Ref"; type_params = ["'a"]; ty = [("value", TyName "'a")]};
-      {name = "Unit"; type_params = []; ty = []}
-    ],
-    ELet(("ref", None, ELam("x", ERecord("Ref", [("value", EVar "x")]))),
-    ELet(("deref", None, ELam("r", 
-      ELet(("r", 
-        Some { type_params = ["'a"]; ty = TyApp[TyName "Ref"; TyName "'a"] },
-        EVar "r"),
-      EProj(EVar "r", "value")))),
-    ELet(("update", Some {type_params = ["'a"]; ty =
-      TyArrow(
-        TyApp[TyName "Ref"; TyName "'a"],
-        TyArrow(TyName "'a", TyName "Unit"))},
-      ELam("r", ELam("x", ERecord("Unit", [])))),
-    ELet(("r", None, EApp(EVar "ref", ELam("x", EBool true))),
-    ELet(("_", None, EApp(EApp(EVar "update", EVar "r"),
-      ELam("x", EIf(EVar "x", EBool false, EBool true)))),
-    EApp(EApp(EVar "update", EVar "r"), ELam("x", EBool false)))))))
-)
+typecheck_source {|
+    type Ref 'a = { value : 'a }
+    type Unit = {}
+    let ref : forall 'a. 'a -> Ref 'a = fun x -> { value = x } in
+    let deref : forall 'a. Ref 'a -> 'a = fun r -> r.value in
+    let update : forall 'a. Ref 'a -> 'a -> Unit = fun r -> fun x -> {} in
+    let r = ref (fun x -> x) in
+    let _ = update r (fun x -> if x then false else true) in
+    update r (fun x -> false)
+|}
 ```
+Output: `Unit`
