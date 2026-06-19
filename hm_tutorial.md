@@ -1872,13 +1872,17 @@ let f = fun r -> r.x in
 ```
 We'd like to be able to invoke `f` on both records, that is `f r1` and `f r2`. There's no reason why `r.x` can't operate on both records, since they both have fields named `x`. Similarly with `{ r with x = true }`, the only requirement on `r` is that it contain a field `x` whose type is `bool`. How do we encode this in our type system?
 
-Recall when inferring the type of record projection, we give the record a fresh unbound type variable with an `OpenRow` constraint. We expressed to the type-checker "we don't know what record this is but we know it should contain a field named `x`." At the expression level, we've already expressed these constraints alongside `Unbound` type variables.
+Recall when inferring the type of record projection, we give the record a fresh unbound type variable with an `OpenRow` constraint. We expressed to the type-checker "we don't know what record this is but we know it should contain a field named `x`." So at the expression level, that constraint is already attached to the `Unbound` type variable for `r`.
 
-What we want then is to take a definition like `f` and make it polymorphic over the fields of a record, a.k.a row polymorphism. We need to account for those row constraints when generalizing and instantiating types. Essentially, row polymorphism is implemented entirely at the type-machinery layer. The expression-level inference doesn't have to change at all.
+The problem is what happens at generalization. When `f` is normally generalized, the `OpenRow` constraint isn't preserved, so you end up with `forall 'a 'b. 'a -> 'b`. We need some way of encoding that `'a` is a record with a field `x : 'b`.
 
-So if `f` were to be generalized properly here, what would be its given type? We'd want to encode that row constraint on its type variables, like `forall 'a 'b. 'a :: { x: 'b, ... } => 'a -> 'b`. The stuff after the `.` and before the `=>` is a row constraint. It corresponds to the `OpenRow` we defined earlier. It says that `'a` should be some record type that contains a field named `x`, whose type is `'b`, which we do not know since all this function does with the field is select it.
+Here's the syntax for that:
+```
+forall 'a 'b. 'a :: { x : 'b, ... } => 'a -> 'b`
+```
+The piece between `::` and `=>` is a row constraint, and it corresponds directly to the `OpenRow` the expression-level inference produced for `r`. So row polymorphism is really about carrying that constraint through `gen`, `inst`, and `unify`. The expression-level inference doesn't have to change at all.
 
-Okay so given that type signature, it's clear we'll have to update `generic_ty` to hold `row_constraint`s.
+Okay so given that type signature, it's clear we need to update `generic_ty` and `TypeVarBind` to carry row constraints. Then we need to update `gen`, `inst`, and `unify` accordingly.
 ```ocaml
 type generic_ty = {
     type_params : (id * row_constraint) list;
@@ -1933,7 +1937,9 @@ let gen (ty: ty) : generic_ty =
     { type_params; ty }
 ```
 
-Similarly, we update `inst`. After we create the table of fresh type variables and walk the type, we go back over each type parameter and, if it has a row constraint, attach the instantiated row to the fresh type variable in the table. This way the fresh type variables carry the row constraints from the generic type.
+Similarly, we update `inst`. It's mostly the same as before: create fresh type variables for each type parameter, then walk the type body replacing each `TyName` with its corresponding type variable.
+
+However, this time, we need to also preserve whatever row constraint the type parameter had, recursing over the row to instantiate its type variables as well.
 
 Overall, our `inst` implementation looks like
 ```ocaml
