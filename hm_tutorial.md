@@ -803,6 +803,18 @@ Overall, our `ELetRec` case looks like
     TELetRec (decls, body, typ body)
 ```
 
+Aside: Here's the typing rule for `ELetRec`.
+
+```
+          Γ_rec = Γ, { VarBind(x, A_x) | x ∈ decls }    Γ_rec ⊢ rhs_x : A_x for each x ∈ decls    Γ_rec ⊢ body : B 
+T-LetRec:----------------------------------------------------------------------------------------------------------
+                                      Γ ⊢ let rec { x = rhs_x | x ∈ decls } in body : B                            
+```
+
+`decls` is the set of names being bound in the let-rec. `A_x` is the type for binding `x` and `rhs_x` is its right-hand-side. `Γ_rec` is the context `Γ` extended with all of the bindings, so each `rhs_x` can refer to any of them. This rule basically says that if each `rhs_x` has the type `A_x` under `Γ_rec`, and the body has the type `B` under `Γ_rec`, then `let rec { x = rhs_x | x ∈ decls } in body` has type `B`.
+
+For annotated bindings, assuming `A_x` is well-formed, `A_x` comes from its annotation with its quantified type variables made rigid in `Γ_rec`.
+
 That's our `let rec` case! Let's test it out with some examples. At this point, manually writing out the AST is going to get tedious, so I'll just show the source. If you're following along with the repo, you'll notice that we've integrated so that we can avoid writing the AST out by hand.
 
 # Examples
@@ -1819,7 +1831,19 @@ T-Let:--------------------------------------------------------------------------
 
 `FV(A)` and `FV(Γ)` are the sets of type variables that appear free in `A` and `Γ` respectively. We write `vars` for `FV(A) \ FV(Γ)`, the type variables free in `A` but not in `Γ`. This rule basically says that if `rhs` has the type `A` in `Γ`, and `Γ` extended with `x` having the type `∀ vars. A` lets us give the body the type `B`, then `let x = rhs in body` has type `B`.
 
-The original Damas-Milner formulation splits this into two rules. Generalization is its own rule:
+And here's our typing rule for `ELetRec`.
+
+```
+          Γ_rec = Γ, { VarBind(x, A_x) | x ∈ decls }          vars_x = FV(A_x) \ FV(Γ) for each x ∈ decls 
+         ---------------------------------------------------------------------------------------------------
+T-LetRec: Γ_rec ⊢ rhs_x : A_x for each x ∈ decls    Γ, { VarBind(x, ∀ vars_x. A_x) | x ∈ decls } ⊢ body : B 
+         ---------------------------------------------------------------------------------------------------
+                                  Γ ⊢ let rec { x = rhs_x | x ∈ decls } in body : B                        
+```
+
+Here, we have the same `decls`, `A_x`, `rhs_x`, and `Γ_rec` as in the original T-LetRec rule. `vars_x` is the set of type variables we generalize for the binding `x`. This rule basically says that if each `rhs_x` has the type `A_x` in `Γ_rec`, and `Γ` extended with each `x` having the type `∀ vars_x. A_x` lets us give the body the type `B`, then `let rec { x = rhs_x | x ∈ decls } in body` has type `B`. Note that when the rhs is inferred, `x` is not polymorphic (i.e. it's a monotype), so in our formulation of T-LetRec, polymorphic recursion isn't supported.
+
+The original Damas-Milner formulation factors generalization out as its own rule:
 
 ```
           Γ ⊢ e : A    a ∉ FV(Γ) 
@@ -1827,15 +1851,7 @@ T-Gen-DM:------------------------
                Γ ⊢ e : ∀a. A     
 ```
 
-This says that if `e` has the type `A` in `Γ`, and `a` is any type variable not free in `Γ`, then `e` can be given the type `∀a. A`. This rule generalizes a single type variable. Then a separate T-Let-DM rule can just assume `A` is polymorphic, since it has already applied T-Gen-DM to all of the relevant free variables.
-
-```
-          Γ ⊢ rhs : A    Γ, VarBind(x, A) ⊢ body : B 
-T-Let-DM:--------------------------------------------
-                  Γ ⊢ let x = rhs in body : B        
-```
-
-Chaining applications of T-Gen-DM for each variable in `FV(A) \ FV(Γ)` gives us the same generalization present in our T-Let rule.
+This says that if `e` has the type `A` in `Γ`, and `a` is any type variable not free in `Γ`, then `e` can be given the type `∀a. A`. With T-Gen-DM in place, the simpler versions of T-Let and T-LetRec don't need to generalize themselves. They assume `A` is already polymorphic where needed, and just thread it through. Chaining applications of T-Gen-DM for each variable in `FV(A) \ FV(Γ)` gives us the same generalization present in our T-Let and T-LetRec rules.
 
 Woo! That was a doozy. But we got through it now. How about we take a look at some examples to celebrate?
 
