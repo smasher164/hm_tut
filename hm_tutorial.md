@@ -281,8 +281,9 @@ The `EBool` case is trivially known, since its type is `TyBool`.
 Aside:
 The formation rule for booleans looks like
 ```
+        
 WF-Bool:-------------
-         ⊢ Bool type  
+         ⊢ Bool type 
 ```
 This is basically an axiom that says `Bool` is a known type.
 
@@ -699,18 +700,18 @@ Our `ELet` case ends up looking like
 Aside: Here are the typing rules for `ELet`. We split them into two rules, one for a let binding without an annotation and one for a let binding with an annotation.
 
 ```
-       Γ ⊢ exp : A    Γ, VarBind(x, A) ⊢ body : B 
+       Γ ⊢ rhs : A    Γ, VarBind(x, A) ⊢ body : B 
 T-Let:--------------------------------------------
-               Γ ⊢ let x = exp in body : B        
+               Γ ⊢ let x = rhs in body : B        
 ```
-This says that under the context, if `exp` can be inferred to be the type `A`, and the context extended with `x` having the type `A` lets us give `body` the type `B`, then the entire expression `let x = exp in body` can be given the type `B`.
+This says that under the context, if `rhs` can be inferred to be the type `A`, and the context extended with `x` having the type `A` lets us give `body` the type `B`, then the entire expression `let x = rhs in body` can be given the type `B`.
 
 ```
-          ⊢ A type    Γ ⊢ exp : A    Γ, VarBind(x, A) ⊢ body : B 
+          ⊢ A type    Γ ⊢ rhs : A    Γ, VarBind(x, A) ⊢ body : B 
 T-LetAnn:--------------------------------------------------------
-                      Γ ⊢ let x : A = exp in body : B            
+                      Γ ⊢ let x : A = rhs in body : B            
 ```
-This says that if `A` is a valid type, `exp` can be inferred to be the type `A`, and the context extended with `x` annotated with the type `A` lets us give `body` the type `B`, then the entire annotated expression `let x: A = exp in body` can be given the type `B`.
+This says that if `A` is a valid type, `rhs` can be inferred to be the type `A`, and the context extended with `x` annotated with the type `A` lets us give `body` the type `B`, then the entire annotated expression `let x: A = rhs in body` can be given the type `B`.
 
 Note that the only thing that's really changed here is that we need to make sure that `A` is a well-formed annotation. Other than that, the first rule is deriving `A` and in the second, `A` is an annotation supplied by the programmer.
 
@@ -1807,6 +1808,34 @@ Overall, our updated implementation of `ELetRec` looks like
     let body = infer env_body body in
     TELetRec (tdecls, body, typ body)
 ```
+
+Aside: Here's our typing rule for `ELet`.
+
+```
+       Γ ⊢ rhs : A    vars = FV(A) \ FV(Γ)    Γ, VarBind(x, ∀ vars. A) ⊢ body : B 
+T-Let:----------------------------------------------------------------------------
+                               Γ ⊢ let x = rhs in body : B                        
+```
+
+`FV(A)` and `FV(Γ)` are the sets of type variables that appear free in `A` and `Γ` respectively. We write `vars` for `FV(A) \ FV(Γ)`, the type variables free in `A` but not in `Γ`. This rule basically says that if `rhs` has the type `A` in `Γ`, and `Γ` extended with `x` having the type `∀ vars. A` lets us give the body the type `B`, then `let x = rhs in body` has type `B`.
+
+The original Damas-Milner formulation splits this into two rules. Generalization is its own rule:
+
+```
+          Γ ⊢ e : A    a ∉ FV(Γ) 
+T-Gen-DM:------------------------
+               Γ ⊢ e : ∀a. A     
+```
+
+This says that if `e` has the type `A` in `Γ`, and `a` is any type variable not free in `Γ`, then `e` can be given the type `∀a. A`. This rule generalizes a single type variable. Then a separate T-Let-DM rule can just assume `A` is polymorphic, since it has already applied T-Gen-DM to all of the relevant free variables.
+
+```
+          Γ ⊢ rhs : A    Γ, VarBind(x, A) ⊢ body : B 
+T-Let-DM:--------------------------------------------
+                  Γ ⊢ let x = rhs in body : B        
+```
+
+Chaining applications of T-Gen-DM for each variable in `FV(A) \ FV(Γ)` gives us the same generalization present in our T-Let rule.
 
 Woo! That was a doozy. But we got through it now. How about we take a look at some examples to celebrate?
 
