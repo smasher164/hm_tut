@@ -2065,6 +2065,44 @@ Now the `TypeVarBind` case just becomes a call to `check_rigid_subset`.
     ...
 ```
 
+Aside: Here are the typing rules for projection and with-expressions on row-polymorphic type variables. They mirror chapter 5's T-Proj and T-With, but get their fields from `TypeVarBind` instead of `TypeBind`.
+
+```
+            Γ ⊢ r : a    TypeVarBind(a, { l : T_l | l ∈ L, ... }) ∈ Γ    f ∈ L 
+T-Proj-Row:--------------------------------------------------------------------
+                                       Γ ⊢ r.f : T_f                           
+```
+
+```
+            Γ ⊢ r : a    TypeVarBind(a, { l : T_l | l ∈ L, ... }) ∈ Γ    M ⊆ L    Γ ⊢ e_m : T_m for each m ∈ M 
+T-With-Row:----------------------------------------------------------------------------------------------------
+                                            Γ ⊢ { r with m = e_m | m ∈ M } : a                                 
+```
+
+We update the T-Let rule to hold row constraints in the quantified type, where the row constraint for type variable `a` is denoted by `R_a`.
+
+```
+                                Γ ⊢ rhs : A                          
+      ---------------------------------------------------------------
+       vars = FV(A) \ FV(Γ)    constraints = { a :: R_a | a ∈ vars } 
+T-Let:---------------------------------------------------------------
+             Γ, VarBind(x, ∀ vars. constraints => A) ⊢ body : B      
+      ---------------------------------------------------------------
+                        Γ ⊢ let x = rhs in body : B                  
+```
+
+T-LetRec is similarly updated to carry row constraints in polymorphic types, but for each binding.
+
+```
+                                              Γ_rec = Γ, { VarBind(x, A_x) | x ∈ decls }                                     
+         --------------------------------------------------------------------------------------------------------------------
+          vars_x = FV(A_x) \ FV(Γ) for each x ∈ decls           constraints_x = { a :: R_a | a ∈ vars_x } for each x ∈ decls 
+T-LetRec:--------------------------------------------------------------------------------------------------------------------
+          Γ_rec ⊢ rhs_x : A_x for each x ∈ decls    Γ, { VarBind(x, ∀ vars_x. constraints_x => A_x) | x ∈ decls } ⊢ body : B 
+         --------------------------------------------------------------------------------------------------------------------
+                                           Γ ⊢ let rec { x = rhs_x | x ∈ decls } in body : B                                 
+```
+
 Now let's look at some examples.
 
 In this example, `'r` is a rigid type variable in the environment with an OpenRow constraint `{ x : bool, ... }`. The body's `r.x` creates an OpenRow constraint `{ x : ?_ }` on `r`'s type variable. `check_rigid_subset` confirms `r`'s row is contained in `'r`'s row.
