@@ -672,6 +672,8 @@ First, we want to `infer` the type of the right-hand-side of the binding. if the
         raise (type_error ty))
 ```
 
+This is actually the *checking mode* of bidirectional type-checking. `infer` is what's called *inference mode* (or sometimes *synthesis mode*): given an expression, we produce its type. `check` is its dual: given an expression *and* an expected type, we verify the expression has that type. We use checking mode when the expected type is known from the context (like an annotation), and inference mode when it isn't.
+
 Now we can match against the annotation and `check` that `rhs` satisfies it.
 ```ocaml
 let rhs =
@@ -1415,7 +1417,7 @@ match ann with
     check (extras @ env) check_ty rhs
 | None -> infer env rhs
 ```
-In the case where there is a generic annotation, we extend the environment with its type parameters (`extras`), and type-check the right-hand-side.
+In the case where there is a generic annotation, we extend the environment with its type parameters (`extras`), and type-check the right-hand-side. The annotation puts us back in checking mode, and the rigid type variables introduced by `as_rigid` mean the check enforces the polymorphic annotation rather than trying to falling back to inference.
 
 Now what if we want to have a generic function that doesn't need a type annotation? This is where generalization comes in.
 
@@ -1942,6 +1944,8 @@ Here's the syntax for that:
 forall 'a 'b. 'a :: { x : 'b, ... } => 'a -> 'b`
 ```
 The piece between `::` and `=>` is a row constraint, and it corresponds directly to the `OpenRow` the expression-level inference produced for `r`. So row polymorphism is really about carrying that constraint through `gen`, `inst`, and `unify`. The expression-level inference doesn't have to change at all.
+
+Aside: Our approach borrows ideas from Atsushi Ohori's [A Polymorphic Record Calculus and Its Compilation](https://dl.acm.org/doi/10.1145/218570.218572), including the `::` syntax for kind-based constraints on type variables. There are many other approaches to row polymorphism. Mitchell Wand's original row variables and Didier Rémy's presence/absence type system handle simple rows where labels must be unique. Daan Leijen's [Extensible records with scoped labels](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/scopedlabels.pdf) lifts that restriction with scoped rows. More recent work by Morris and McKinna in [Abstracting Extensible Data Types: Or, Rows by Any Other Name](https://dl.acm.org/doi/10.1145/3290325) introduces a system called Rose that abstracts over rows via qualified types and captures both simple and scoped rows. Its successor, [Generic Programming with Extensible Data Types](https://dl.acm.org/doi/10.1145/3607843) by Hubers and Morris, extends Rose with first-class labels and generic programming over rows, enabling polymorphic equality on extensible records and variants.
 
 Okay so given that type signature, it's clear we need to update `generic_ty` and `TypeVarBind` to carry row constraints. Then we need to update `gen`, `inst`, and `unify` accordingly.
 ```ocaml
