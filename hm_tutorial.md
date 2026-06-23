@@ -2065,7 +2065,7 @@ Now the `TypeVarBind` case just becomes a call to `check_rigid_subset`.
     ...
 ```
 
-Aside: Here are the typing rules for projection and with-expressions on row-polymorphic type variables. They mirror chapter 5's T-Proj and T-With, but get their fields from `TypeVarBind` instead of `TypeBind`.
+Aside: Here are the typing rules for projection and with-expressions on row-polymorphic type variables. They mirror T-Proj and T-With from the section on [Type declarations](#type-declarations), but get their fields from `TypeVarBind` instead of `TypeBind`.
 
 ```
             Γ ⊢ r : a    TypeVarBind(a, { l : T_l | l ∈ L, ... }) ∈ Γ    f ∈ L 
@@ -2308,6 +2308,34 @@ match (t1, t2) with
      ignore (union_rows env tv_row tycon_row)
 ```
 We apply the type to get its underlying record type and union its row constraints with those of our type variable that we're unifying.
+
+Aside: We update our formation rules for type constructors by updating `TypeBind` to carry a list of type parameters.
+
+```
+          TypeBind(T, params, _) ∈ Γ    Γ ⊢ arg_p type for each p ∈ params 
+WF-Tycon:------------------------------------------------------------------
+                                   Γ ⊢ T args type                         
+```
+
+We add T-Record-App, T-Proj-App, and T-With-App to mirror T-Record, T-Proj, and T-With from the section on [Type declarations](#type-declarations), but they substitute the type arguments into the tycon's body. We write `T[params ↦ args]` for `T` with each parameter in `params` replaced by the corresponding argument in `args`.
+
+```
+              TypeBind(T, params, { l : T_l | l ∈ L }) ∈ Γ    Γ ⊢ arg_p type for each p ∈ params    Γ ⊢ e_l : T_l[params ↦ args] for each l ∈ L 
+T-Record-App:-----------------------------------------------------------------------------------------------------------------------------------
+                                                               Γ ⊢ { l = e_l | l ∈ L } : T args                                                 
+```
+
+```
+            Γ ⊢ r : T args    TypeBind(T, params, { l : T_l | l ∈ L }) ∈ Γ    f ∈ L 
+T-Proj-App:-------------------------------------------------------------------------
+                                  Γ ⊢ r.f : T_f[params ↦ args]                      
+```
+
+```
+            Γ ⊢ r : T args    TypeBind(T, params, { l : T_l | l ∈ L }) ∈ Γ    M ⊆ L    Γ ⊢ e_m : T_m[params ↦ args] for each m ∈ M 
+T-With-App:------------------------------------------------------------------------------------------------------------------------
+                                                    Γ ⊢ { r with m = e_m | m ∈ M } : T args                                        
+```
 
 And so ends our process of typechecking generic type declarations! Let's look at some examples.
 
