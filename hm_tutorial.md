@@ -15,6 +15,8 @@ We assume you understand
 - Vaguely understand what a type system is.
 - Have some familiarity with reading OCaml.
 
+All the code in this article can be found in the companion repository https://github.com/smasher164/hm_tut. Each file under the lib directory corresponds to the features added in each section of this article.
+
 Type inference is the process of taking some expression that represents (part of) a program and returning its type.
 If the expression is invalid, i.e. it does some invalid operation according to the rules of your language (like adding a `bool` to a `string`), type inference will fail.
 If the expression lacks the sufficient information to return a type, i.e. it is missing a binding in its scope or type information for a binding, type inference will fail.
@@ -542,7 +544,9 @@ Let's test it out with some examples. In our case, a program is just an expressi
 type prog = exp
 ```
 
-# Examples
+You can find and run these examples in [lib/one.ml](lib/one.ml).
+
+## Examples
 
 ```ocaml
 typecheck_prog
@@ -613,7 +617,9 @@ This says if under the context `Γ`, `cond` (the expression in the condition)'s 
 
 That was pretty quick! Let's test it out.
 
-# Example
+You can find and run these examples in [lib/two.ml](lib/two.ml).
+
+## Examples
 
 ```ocaml
 (* if true then false else (fun x -> x) true *)
@@ -717,7 +723,9 @@ Note that the only thing that's really changed here is that we need to make sure
 
 Now let's test it out!
 
-# Examples
+You can find and run these examples in [lib/three.ml](lib/three.ml).
+
+## Examples
 
 ```ocaml
 typecheck_prog
@@ -817,7 +825,9 @@ For annotated bindings, assuming `A_x` is well-formed, `A_x` comes from its anno
 
 That's our `let rec` case! Let's test it out with some examples. At this point, manually writing out the AST is going to get tedious, so I'll just show the source. If you're following along with the repo, you'll notice that we've integrated so that we can avoid writing the AST out by hand.
 
-# Examples
+You can find and run these examples in [lib/four.ml](lib/four.ml).
+
+## Examples
 
 ```ocaml
 typecheck_source {|
@@ -1166,7 +1176,11 @@ T-Proj:------------------------------------------------------------
 ```
 This says that if r is a record of type T containing a field f, then r.f has the type of that field in T.
 
-# Examples
+Let's take a look at some examples.
+
+You can find and run these examples in [lib/five.ml](lib/five.ml).
+
+## Examples
 
 ```ocaml
 typecheck_source {|
@@ -1855,7 +1869,9 @@ This says that if `e` has the type `A` in `Γ`, and `a` is any type variable not
 
 Woo! That was a doozy. But we got through it now. How about we take a look at some examples to celebrate?
 
-# Examples
+You can find and run these examples in [lib/six.ml](lib/six.ml).
+
+## Examples
 
 ```ocaml
 typecheck_source {|
@@ -2105,6 +2121,10 @@ T-LetRec:-----------------------------------------------------------------------
 
 Now let's look at some examples.
 
+You can find and run these examples in [lib/seven.ml](lib/seven.ml).
+
+## Examples
+
 In this example, `'r` is a rigid type variable in the environment with an OpenRow constraint `{ x : bool, ... }`. The body's `r.x` creates an OpenRow constraint `{ x : ?_ }` on `r`'s type variable. `check_rigid_subset` confirms `r`'s row is contained in `'r`'s row.
 ```ocaml
 typecheck_source {|
@@ -2339,6 +2359,10 @@ T-With-App:---------------------------------------------------------------------
 
 And so ends our process of typechecking generic type declarations! Let's look at some examples.
 
+You can find and run these examples in [lib/eight.ml](lib/eight.ml).
+
+## Examples
+
 Here's the `box bool` example from earlier. `{ x = true }` is inferred as a `ClosedRow { x : bool }` that's checked against the annotation. `apply_tyapp` takes `box` and substitutes `bool` for `'a` in its body, giving us `{ x : bool }`, which matches that closed row constraint.
 ```ocaml
 typecheck_source {|
@@ -2462,7 +2486,11 @@ T-LetRec:             S_x = ∀ vars_x. constraints_x => A_x if is_value(rhs_x) 
                                        Γ ⊢ let rec { x = rhs_x | x ∈ decls } in body : B                              
 ```
 
-# Example
+Let's take a look at some examples.
+
+You can find and run these examples in [lib/nine.ml](lib/nine.ml).
+
+## Examples
 
 We can simulate the example from before with our type-checker. We add definitions and signatures for `Ref`, `ref`, `deref`, and `update`. We can't really implement `update` without an actual memory store, so we just return an empty `Unit` record.
 
@@ -2496,3 +2524,7 @@ typecheck_source {|
 |}
 ```
 Output: `Unit`
+
+# Conclusion
+
+The features covered in this article already give you a very sound and flexible system to program in, with generics, row polymorphism, side effects, and annotation-less type-safety. As mentioned, see the companion repository https://github.com/smasher164/hm_tut for the source corresponding to each section. In the next post, we'll cover how to implement typeclasses/traits and their various extensions.
