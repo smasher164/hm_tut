@@ -2436,6 +2436,32 @@ The `ELetRec` case gets the same treatment in the `List.map` that produces `gene
 
 Putting this all together, we have implemented the value restriction. If we added `ref`, `deref`, and `update` built-ins, our language would correctly handle mutability.
 
+Aside: Given the `is_value` predicate we defined in this section, the typing rules for let and let-rec are updated to generalize only when the rhs is a value.
+
+```
+                                Γ ⊢ rhs : A                          
+      ---------------------------------------------------------------
+       vars = FV(A) \ FV(Γ)    constraints = { a :: R_a | a ∈ vars } 
+      ---------------------------------------------------------------
+T-Let:      S = ∀ vars. constraints => A if is_value(rhs) else A     
+      ---------------------------------------------------------------
+                        Γ, VarBind(x, S) ⊢ body : B                  
+      ---------------------------------------------------------------
+                        Γ ⊢ let x = rhs in body : B                  
+```
+
+```
+                                           Γ_rec = Γ, { VarBind(x, A_x) | x ∈ decls }                                 
+         -------------------------------------------------------------------------------------------------------------
+          vars_x = FV(A_x) \ FV(Γ) for each x ∈ decls    constraints_x = { a :: R_a | a ∈ vars_x } for each x ∈ decls 
+         -------------------------------------------------------------------------------------------------------------
+T-LetRec:             S_x = ∀ vars_x. constraints_x => A_x if is_value(rhs_x) else A_x, for each x ∈ decls            
+         -------------------------------------------------------------------------------------------------------------
+          Γ_rec ⊢ rhs_x : A_x for each x ∈ decls                        Γ, { VarBind(x, S_x) | x ∈ decls } ⊢ body : B 
+         -------------------------------------------------------------------------------------------------------------
+                                       Γ ⊢ let rec { x = rhs_x | x ∈ decls } in body : B                              
+```
+
 # Example
 
 We can simulate the example from before with our type-checker. We add definitions and signatures for `Ref`, `ref`, `deref`, and `update`. We can't really implement `update` without an actual memory store, so we just return an empty `Unit` record.
