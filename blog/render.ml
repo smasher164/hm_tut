@@ -548,7 +548,7 @@ let transform (doc : Cmarkit.Doc.t) : Cmarkit.Doc.t =
   Cmarkit.Mapper.map_doc m doc
 
 let baseline_css = {|
-body { max-width: 40em; margin: 2em auto; padding: 0 1em; font-family: 'Century Schoolbook', 'Century Schoolbook L', 'Times New Roman', Times, serif; color: #1f2937; }
+body { max-width: 40em; margin: 2em auto; padding: 0 1em; font-family: 'Century Schoolbook', 'Century Schoolbook L', 'Times New Roman', Times, serif; color: #0f172a; }
 @media screen and (max-width: 720px) { body { width: 80%; max-width: none; } }
 h1 { text-align: center; }
 h1, h2, h3, h4 { font-weight: 100; line-height: 1.2; }
@@ -559,8 +559,8 @@ pre.chroma.light { background: transparent; }
 a:link { color: #9c27b0; text-decoration: none; }
 a:visited { color: #610071; }
 a:hover, a:active { color: #2196F3; text-decoration: underline; }
-details.aside { margin: 1em 0; color: #475569; }
-details.aside summary { cursor: pointer; font-style: italic; color: #475569; list-style: none; padding-left: 16px; padding-bottom: 0.3em; position: relative; }
+details.aside { margin: 1em 0; color: #334155; }
+details.aside summary { cursor: pointer; font-style: italic; color: #334155; list-style: none; padding-left: 16px; padding-bottom: 0.3em; position: relative; }
 details.aside summary::after { content: ''; position: absolute; left: 14px; right: 16px; bottom: 0; height: 2px; background: #cbd5e1; transition: background 0.15s; }
 details.aside summary:hover { color: #2196F3; }
 details.aside summary:hover::after { background: #2196F3; }
@@ -572,7 +572,7 @@ details.aside[open] summary::before { left: 0; top: 0.6em; border-top: 5px solid
 details.aside[open] summary { margin-bottom: 0.4em; }
 details.aside .aside-body { padding-left: 1em; margin: 0; }
 figure.rule { margin: 1.5em 0; display: flex; align-items: center; gap: 1.5em; padding: 0.5em 0; max-width: 100%; }
-figure.rule .rule-name { color: #475569; font-size: 0.9em; white-space: nowrap; flex-shrink: 0; }
+figure.rule .rule-name { color: #334155; font-size: 0.9em; white-space: nowrap; flex-shrink: 0; }
 figure.rule .rule-math { font-size: 1.05em; flex: 1; overflow-x: auto; min-width: 0; }
 .heading-anchor:link, .heading-anchor:visited { color: inherit; text-decoration: none; }
 .heading-anchor:hover { color: inherit; text-decoration: underline; text-decoration-color: #94a3b8; text-underline-offset: 4px; }
