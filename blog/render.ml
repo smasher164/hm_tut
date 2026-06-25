@@ -520,9 +520,12 @@ let block_mapper mapper block =
       Buffer.contents buf
     in
     let html =
-      Printf.sprintf
-        "<h%d id=\"%s\"><a class=\"heading-anchor\" href=\"#%s\">%s</a></h%d>"
-        level slug slug escaped level
+      if level = 1 then
+        Printf.sprintf "<h%d id=\"%s\">%s</h%d>" level slug escaped level
+      else
+        Printf.sprintf
+          "<h%d id=\"%s\"><a class=\"heading-anchor\" href=\"#%s\">%s</a></h%d>"
+          level slug slug escaped level
     in
     Mapper.ret (Block.Html_block (block_lines_of_string html, meta))
   | Block.Code_block (cb, meta) ->
