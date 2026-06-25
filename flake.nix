@@ -19,8 +19,12 @@
         };
       in {
         devShell = pkgs.mkShell {
-          buildInputs = with pkgs.ocamlPackages; [
+          buildInputs = [
             judgefmt.packages.${system}.judgefmt
+            pkgs.chroma
+            pkgs.katex
+            pkgs.nodejs_22
+          ] ++ (with pkgs.ocamlPackages; [
             ocaml
             ocaml-lsp
             dune_3
@@ -29,7 +33,10 @@
             findlib
             ppx_inline_test
             base
-          ];
+            stdio
+            cmarkit
+            re
+          ]);
         };
       });
 }

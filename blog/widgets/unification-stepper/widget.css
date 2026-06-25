@@ -1,0 +1,163 @@
+[data-widget="unification-stepper"] {
+  border: 1px solid #d1d5db;
+  padding: 1em;
+  margin: 1.5em 0;
+  font-family: 'DejaVu Sans Mono', ui-monospace, monospace;
+  font-size: 0.95em;
+}
+[data-widget="unification-stepper"] .us-textarea {
+  width: 100%;
+  font-family: inherit;
+  font-size: inherit;
+  padding: 0.5em;
+  border: 1px solid #d1d5db;
+  box-sizing: border-box;
+  resize: vertical;
+}
+[data-widget="unification-stepper"] .us-textarea:disabled {
+  background: #f1f5f9;
+  color: #475569;
+}
+[data-widget="unification-stepper"] .us-controls {
+  margin-top: 0.5em;
+  display: flex;
+  gap: 0.5em;
+}
+[data-widget="unification-stepper"] .us-controls button {
+  padding: 0.4em 1em;
+  border: 1px solid #d1d5db;
+  background: #f8fafc;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.9em;
+}
+[data-widget="unification-stepper"] .us-controls button:hover:not(:disabled) {
+  background: #e2e8f0;
+}
+[data-widget="unification-stepper"] .us-controls button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+[data-widget="unification-stepper"] .us-error {
+  color: #b91c1c;
+  margin-top: 0.5em;
+  font-size: 0.85em;
+  min-height: 1.4em;
+  white-space: pre-wrap;
+}
+[data-widget="unification-stepper"] .us-tree {
+  margin-top: 1em;
+  padding: 0.75em 0.5em;
+  background: #f8fafc;
+}
+[data-widget="unification-stepper"] .us-tree-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+[data-widget="unification-stepper"] .us-tree-node {
+  display: flex;
+  align-items: center;
+  padding: 0.15em 0;
+}
+[data-widget="unification-stepper"] .us-tree-indicator {
+  display: inline-block;
+  width: 1.2em;
+  color: #2563eb;
+  font-weight: bold;
+  flex-shrink: 0;
+}
+[data-widget="unification-stepper"] .us-tree-content {
+  flex: 1;
+}
+[data-widget="unification-stepper"] .us-tree-status {
+  margin-left: 0.5em;
+  width: 1em;
+  text-align: right;
+}
+[data-widget="unification-stepper"] .us-tree-pending .us-tree-content,
+[data-widget="unification-stepper"] .us-tree-active .us-tree-content,
+[data-widget="unification-stepper"] .us-tree-forced .us-tree-content {
+  color: #1e293b;
+}
+[data-widget="unification-stepper"] .us-tree-done .us-tree-content {
+  color: #6b7280;
+}
+[data-widget="unification-stepper"] .us-tree-done .us-tree-status {
+  color: #16a34a;
+}
+[data-widget="unification-stepper"] .us-tree-error .us-tree-content {
+  color: #b91c1c;
+}
+[data-widget="unification-stepper"] .us-tree-error .us-tree-status {
+  color: #b91c1c;
+}
+[data-widget="unification-stepper"] .us-tree-children {
+  margin-left: 0.6em;
+  padding-left: 0.9em;
+  border-left: 1px solid #cbd5e1;
+}
+[data-widget="unification-stepper"] .us-heap {
+  margin-top: 1em;
+  padding: 0.75em;
+  background: #f8fafc;
+  min-height: 120px;
+}
+[data-widget="unification-stepper"] .us-heap-svg {
+  width: 100%;
+  display: block;
+}
+[data-widget="unification-stepper"] .us-cell rect {
+  fill: #f8fafc;
+  stroke: #475569;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  shape-rendering: crispEdges;
+}
+[data-widget="unification-stepper"] .us-cell-linked rect {
+  fill: #fef3c7;
+}
+[data-widget="unification-stepper"] .us-section-label {
+  fill: #94a3b8;
+  font-family: inherit;
+  font-size: 11px;
+  font-style: italic;
+  text-anchor: start;
+  dominant-baseline: central;
+}
+[data-widget="unification-stepper"] .us-type-target {
+  fill: #1d4ed8;
+  font-weight: 600;
+}
+[data-widget="unification-stepper"] .us-cell text {
+  fill: #1e293b;
+  font-family: inherit;
+  font-size: 14px;
+  text-anchor: middle;
+  dominant-baseline: central;
+}
+[data-widget="unification-stepper"] .us-type-box {
+  fill: #fff;
+  stroke: #475569;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+[data-widget="unification-stepper"] .us-type-text {
+  fill: #1e293b;
+  font-family: inherit;
+  font-size: 14px;
+  text-anchor: start;
+  dominant-baseline: central;
+}
+[data-widget="unification-stepper"] .us-tree-expanded .us-tree-content {
+  color: #475569;
+}
+[data-widget="unification-stepper"] .us-link-arrow {
+  stroke: #2563eb;
+  stroke-width: 1.5;
+  fill: none;
+}
+[data-widget="unification-stepper"] .us-arrowhead {
+  fill: #2563eb;
+  stroke: none;
+}

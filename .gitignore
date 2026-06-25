@@ -29,3 +29,11 @@ setup.log
 _opam/
 
 .direnv/
+
+# Rendered output
+dist/
+
+*.png
+
+.claude/
+.playwright-mcp/

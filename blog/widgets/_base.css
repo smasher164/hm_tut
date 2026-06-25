@@ -1,0 +1,7 @@
+[data-widget] [hidden] { display: none !important; }
+[data-widget] button,
+[data-widget] textarea {
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+}
