@@ -1,6 +1,7 @@
 <div data-widget="let-generalization-scope">
   <div class="lg-input">
-    <textarea class="lg-textarea" rows="2" spellcheck="false">(fun a -> let b = (fun c -> c) a in b) true</textarea>
+    <label for="lg-expr" class="lg-sr-only">Expression to type-check</label>
+    <textarea id="lg-expr" class="lg-textarea" rows="2" spellcheck="false">(fun a -> let b = (fun c -> c) a in b) true</textarea>
     <div class="lg-controls">
       <button type="button" class="lg-submit">Submit</button>
       <button type="button" class="lg-back" disabled>Back</button>

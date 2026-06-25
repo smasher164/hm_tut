@@ -398,8 +398,18 @@ let rec inline_text (inline : Cmarkit.Inline.t) : string =
   | _ -> ""
 
 let toc_entries : (int * string * string) list ref = ref []
+let seen_slugs : (string, int) Hashtbl.t = Hashtbl.create (module String)
 
-let reset_toc () = toc_entries := []
+let reset_toc () =
+  toc_entries := [];
+  Hashtbl.clear seen_slugs
+
+let unique_slug base =
+  match Hashtbl.find seen_slugs base with
+  | None -> Hashtbl.set seen_slugs ~key:base ~data:1; base
+  | Some n ->
+    Hashtbl.set seen_slugs ~key:base ~data:(n + 1);
+    base ^ "-" ^ Int.to_string (n + 1)
 
 let push_toc ~level ~text ~slug =
   toc_entries := (level, text, slug) :: !toc_entries
@@ -408,7 +418,7 @@ let render_toc () : string =
   let entries = List.rev !toc_entries in
   let buf = Buffer.create 1024 in
   Buffer.add_string buf
-    "<nav class=\"toc\"><details><summary>Contents</summary>";
+    "<nav class=\"toc\" aria-label=\"Table of contents\"><details><summary>Contents</summary>";
   let min_level =
     List.fold entries ~init:Int.max_value ~f:(fun acc (lvl, _, _) ->
       Int.min acc lvl)
@@ -464,7 +474,7 @@ let block_mapper mapper block =
   | Block.Heading (h, meta) ->
     let level = Block.Heading.level h in
     let text = inline_text (Block.Heading.inline h) in
-    let slug = slugify text in
+    let slug = unique_slug (slugify text) in
     push_toc ~level ~text ~slug;
     (* cmarkit's HTML renderer has no hook for emitting id attributes. *)
     let escaped =
@@ -577,14 +587,14 @@ pre { padding: 0; overflow-x: auto; background: transparent; }
 pre.chroma.light { background: transparent; }
 a:link { color: #9c27b0; text-decoration: none; }
 a:visited { color: #610071; }
-a:hover, a:active { color: #2196F3; text-decoration: underline; }
+a:hover, a:active { color: #1565C0; text-decoration: underline; }
 details.aside { margin: 1em 0; color: #334155; }
 details.aside summary { cursor: pointer; font-style: italic; color: #334155; list-style: none; padding-left: 16px; padding-bottom: 0.3em; position: relative; }
 details.aside summary::after { content: ''; position: absolute; left: 14px; right: 16px; bottom: 0; height: 2px; background: #cbd5e1; transition: background 0.15s; }
-details.aside summary:hover { color: #2196F3; }
-details.aside summary:hover::after { background: #2196F3; }
-details.aside summary:hover::before { border-left-color: #2196F3; }
-details.aside[open] summary:hover::before { border-left-color: transparent; border-top-color: #2196F3; }
+details.aside summary:hover { color: #1565C0; }
+details.aside summary:hover::after { background: #1565C0; }
+details.aside summary:hover::before { border-left-color: #1565C0; }
+details.aside[open] summary:hover::before { border-left-color: transparent; border-top-color: #1565C0; }
 details.aside summary::-webkit-details-marker { display: none; }
 details.aside summary::before { content: ''; position: absolute; left: 1px; top: 0.45em; width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 5px solid #64748b; transition: border-color 0.15s; }
 details.aside[open] summary::before { left: 0; top: 0.6em; border-top: 5px solid #64748b; border-bottom: none; border-left: 4px solid transparent; border-right: 4px solid transparent; }
@@ -598,10 +608,10 @@ figure.rule .rule-math { font-size: 1.05em; flex: 1; overflow-x: auto; min-width
 nav.toc { margin-bottom: 2em; line-height: 1.3; }
 nav.toc details summary { cursor: pointer; font-weight: 100; font-size: 1.1em; list-style: none; padding-left: 1em; padding-bottom: 0.3em; position: relative; }
 nav.toc details summary::after { content: ''; position: absolute; left: 1em; right: 1em; bottom: 0; height: 2px; background: #cbd5e1; transition: background 0.15s; }
-nav.toc details summary:hover { color: #2196F3; }
-nav.toc details summary:hover::after { background: #2196F3; }
-nav.toc details summary:hover::before { border-left-color: #2196F3; }
-nav.toc details[open] summary:hover::before { border-left-color: transparent; border-top-color: #2196F3; }
+nav.toc details summary:hover { color: #1565C0; }
+nav.toc details summary:hover::after { background: #1565C0; }
+nav.toc details summary:hover::before { border-left-color: #1565C0; }
+nav.toc details[open] summary:hover::before { border-left-color: transparent; border-top-color: #1565C0; }
 nav.toc details summary::-webkit-details-marker { display: none; }
 nav.toc details summary::before { content: ''; position: absolute; left: 1px; top: 0.55em; width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 5px solid #64748b; transition: border-color 0.15s; }
 nav.toc details[open] summary::before { left: 0; top: 0.7em; border-top: 5px solid #64748b; border-bottom: none; border-left: 4px solid transparent; border-right: 4px solid transparent; }
@@ -617,6 +627,8 @@ let html_shell ~title ~body ~css ~js =
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="A tutorial on Hindley Milner type inference.">
 <title>%s</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.min.css">
 <style>%s</style>
