@@ -53,7 +53,7 @@
   align-items: center;
   gap: 0.75em;
   flex-wrap: wrap;
-  height: 1.6em;
+  min-height: 1.6em;
 }
 [data-widget="let-generalization-scope"] .lg-mode-label {
   color: #94a3b8;

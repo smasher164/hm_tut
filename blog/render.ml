@@ -20,7 +20,12 @@ let katex_css_inline () : string =
   else
     let prefix = Stdlib.Filename.dirname (Stdlib.Filename.dirname bin) in
     let path = prefix ^ "/lib/node_modules/katex/dist/katex.min.css" in
-    if Stdlib.Sys.file_exists path then read_file path else ""
+    if Stdlib.Sys.file_exists path then
+      let css = read_file path in
+      String.substr_replace_all css
+        ~pattern:"url(fonts/"
+        ~with_:"url(https://cdn.jsdelivr.net/npm/katex@0.16/dist/fonts/"
+    else ""
 
 (* Longer prefixes must come first so prefix matches do not shadow each other. *)
 let unicode_subs : (string * string) list = [
@@ -103,16 +108,33 @@ let to_latex (s : string) : string =
           else if has_digit part then "\\mathit{" ^ part ^ "}"
           else "\\textit{" ^ part ^ "}"
         in
-        if not (String.contains word '_') then
+        if String.equal word "_" then
+          Buffer.add_string buf "\\_"
+        else if not (String.contains word '_') then
           Buffer.add_string buf (format_part word)
         else begin
           let parts = String.split word ~on:'_' in
-          let rec build = function
-            | [] -> ""
-            | [x] -> format_part x
-            | hd :: tl -> format_part hd ^ "_{" ^ build tl ^ "}"
+          let first_empty = match parts with "" :: _ -> true | _ -> false in
+          let last_single =
+            match List.last parts with
+            | Some s -> String.length s = 1
+            | None -> false
           in
-          Buffer.add_string buf (build parts)
+          if first_empty || last_single then
+            let rec build = function
+              | [] -> ""
+              | [x] -> format_part x
+              | hd :: tl -> format_part hd ^ "_{" ^ build tl ^ "}"
+            in
+            Buffer.add_string buf (build parts)
+          else
+            let escaped =
+              String.substr_replace_all word ~pattern:"_" ~with_:"\\_"
+            in
+            if has_digit word then
+              Buffer.add_string buf ("\\mathit{" ^ escaped ^ "}")
+            else
+              Buffer.add_string buf ("\\textit{" ^ escaped ^ "}")
         end;
         i := !j
       end else begin
@@ -652,6 +674,7 @@ let html_shell ~title ~body ~css ~katex_css ~js =
 <meta name="description" content="A tutorial on Hindley Milner type inference.">
 <title>%s</title>
 <link rel="preload" href="/static/CenturySchL-Roma.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/CenturySchL-Ital.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/DejaVuSansMono.woff2" as="font" type="font/woff2" crossorigin>
 <style>%s</style>
 <style>%s</style>
@@ -689,7 +712,7 @@ let () =
   in
   let js = String.concat ~sep:"\n" (List.rev !widget_js) in
   let html =
-    html_shell ~title:"Hindley-Milner Type Inference" ~body ~css ~katex_css:(katex_css_inline ()) ~js
+    html_shell ~title:"Type Inference (Part 1)" ~body ~css ~katex_css:(katex_css_inline ()) ~js
   in
   write_file out_path html;
   print_endline ("wrote " ^ out_path)
