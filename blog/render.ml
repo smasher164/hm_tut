@@ -10,6 +10,7 @@ let ensure_dir d =
 (* Longer prefixes must come first so prefix matches do not shadow each other. *)
 let unicode_subs : (string * string) list = [
   "...", "\\dots ";
+  "->", " \\to ";
   "=>", "\\Rightarrow ";
   "::", " :: ";
   "↦", " \\mapsto ";
@@ -79,14 +80,25 @@ let to_latex (s : string) : string =
         let j = ref !i in
         while !j < n && is_word_char s.[!j] do Int.incr j done;
         let word = String.sub s ~pos:!i ~len:(!j - !i) in
-        if List.mem keywords word ~equal:String.equal then
-          Buffer.add_string buf ("\\mathtt{" ^ word ^ "}")
-        else if String.length word = 1 then
-          Buffer.add_string buf word
-        else if has_digit word then
-          Buffer.add_string buf ("\\mathit{" ^ word ^ "}")
-        else
-          Buffer.add_string buf ("\\textit{" ^ word ^ "}");
+        let format_part part =
+          if String.is_empty part then ""
+          else if List.mem keywords part ~equal:String.equal then
+            "\\mathtt{" ^ part ^ "}"
+          else if String.length part = 1 then part
+          else if has_digit part then "\\mathit{" ^ part ^ "}"
+          else "\\textit{" ^ part ^ "}"
+        in
+        if not (String.contains word '_') then
+          Buffer.add_string buf (format_part word)
+        else begin
+          let parts = String.split word ~on:'_' in
+          let rec build = function
+            | [] -> ""
+            | [x] -> format_part x
+            | hd :: tl -> format_part hd ^ "_{" ^ build tl ^ "}"
+          in
+          Buffer.add_string buf (build parts)
+        end;
         i := !j
       end else begin
         Buffer.add_char buf c;
@@ -99,6 +111,7 @@ type rule = { name : string; premise_tiers : string list; conclusion : string }
 
 let divider_with_name_re = Re.Perl.compile_pat {|^([A-Za-z][A-Za-z0-9-]*):-{3,}\s*$|}
 let divider_only_re = Re.Perl.compile_pat {|^-{3,}\s*$|}
+let labeled_content_re = Re.Perl.compile_pat {|^([A-Za-z][A-Za-z0-9-]*):\s+(.+)$|}
 
 let classify_line (line : string) =
   let stripped = String.strip line in
@@ -106,12 +119,17 @@ let classify_line (line : string) =
   | Some g -> `Named_div (Re.Group.get g 1)
   | None ->
     if Re.execp divider_only_re stripped then `Div
-    else `Content line
+    else
+      match Re.exec_opt labeled_content_re stripped with
+      | Some g -> `Labeled_content (Re.Group.get g 1, Re.Group.get g 2)
+      | None -> `Content line
 
 let rec split_on_dividers groups current = function
   | [] -> List.rev (List.rev current :: groups)
   | `Content line :: rest ->
     split_on_dividers groups (line :: current) rest
+  | `Labeled_content (_, content) :: rest ->
+    split_on_dividers groups (content :: current) rest
   | (`Div | `Named_div _) :: rest ->
     split_on_dividers (List.rev current :: groups) [] rest
 
@@ -123,6 +141,7 @@ let parse_rule (lines : string list) : rule option =
   let name =
     List.find_map tokens ~f:(function
       | `Named_div n -> Some n
+      | `Labeled_content (n, _) -> Some n
       | _ -> None)
   in
   let groups = split_on_dividers [] [] tokens in
