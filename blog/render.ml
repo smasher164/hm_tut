@@ -614,12 +614,12 @@ let transform (doc : Cmarkit.Doc.t) : Cmarkit.Doc.t =
   Cmarkit.Mapper.map_doc m doc
 
 let baseline_css = {|
-@font-face { font-family: 'Century Schoolbook'; src: url('/static/CenturySchL-Roma.woff2') format('woff2'), url('/static/CenturySchL-Roma.woff') format('woff'), url('/static/CenturySchL-Roma.ttf') format('truetype'); font-weight: normal; font-style: normal; font-display: swap; }
-@font-face { font-family: 'Century Schoolbook'; src: url('/static/CenturySchL-Bold.woff2') format('woff2'), url('/static/CenturySchL-Bold.woff') format('woff'), url('/static/CenturySchL-Bold.ttf') format('truetype'); font-weight: bold; font-style: normal; font-display: swap; }
-@font-face { font-family: 'Century Schoolbook'; src: url('/static/CenturySchL-Ital.woff2') format('woff2'), url('/static/CenturySchL-Ital.woff') format('woff'), url('/static/CenturySchL-Ital.ttf') format('truetype'); font-weight: normal; font-style: italic; font-display: swap; }
-@font-face { font-family: 'Century Schoolbook'; src: url('/static/CenturySchL-BoldItal.woff2') format('woff2'), url('/static/CenturySchL-BoldItal.woff') format('woff'), url('/static/CenturySchL-BoldItal.ttf') format('truetype'); font-weight: bold; font-style: italic; font-display: swap; }
-@font-face { font-family: 'DejaVu Sans Mono'; src: url('/static/DejaVuSansMono.woff2') format('woff2'), url('/static/DejaVuSansMono.woff') format('woff'), url('/static/DejaVuSansMono.ttf') format('truetype'); font-weight: normal; font-style: normal; font-display: swap; }
-@font-face { font-family: 'DejaVu Sans Mono'; src: url('/static/DejaVuSansMono-Bold.woff2') format('woff2'), url('/static/DejaVuSansMono-Bold.woff') format('woff'), url('/static/DejaVuSansMono-Bold.ttf') format('truetype'); font-weight: bold; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Century Schoolbook'; src: url('/static/CenturySchL-Roma.woff2') format('woff2'), url('/static/CenturySchL-Roma.woff') format('woff'), url('/static/CenturySchL-Roma.ttf') format('truetype'); font-weight: normal; font-style: normal; }
+@font-face { font-family: 'Century Schoolbook'; src: url('/static/CenturySchL-Bold.woff2') format('woff2'), url('/static/CenturySchL-Bold.woff') format('woff'), url('/static/CenturySchL-Bold.ttf') format('truetype'); font-weight: bold; font-style: normal; }
+@font-face { font-family: 'Century Schoolbook'; src: url('/static/CenturySchL-Ital.woff2') format('woff2'), url('/static/CenturySchL-Ital.woff') format('woff'), url('/static/CenturySchL-Ital.ttf') format('truetype'); font-weight: normal; font-style: italic; }
+@font-face { font-family: 'Century Schoolbook'; src: url('/static/CenturySchL-BoldItal.woff2') format('woff2'), url('/static/CenturySchL-BoldItal.woff') format('woff'), url('/static/CenturySchL-BoldItal.ttf') format('truetype'); font-weight: bold; font-style: italic; }
+@font-face { font-family: 'DejaVu Sans Mono'; src: url('/static/DejaVuSansMono.woff2') format('woff2'), url('/static/DejaVuSansMono.woff') format('woff'), url('/static/DejaVuSansMono.ttf') format('truetype'); font-weight: normal; font-style: normal; }
+@font-face { font-family: 'DejaVu Sans Mono'; src: url('/static/DejaVuSansMono-Bold.woff2') format('woff2'), url('/static/DejaVuSansMono-Bold.woff') format('woff'), url('/static/DejaVuSansMono-Bold.ttf') format('truetype'); font-weight: bold; font-style: normal; }
 body { max-width: 40em; margin: 2em auto; padding: 0 1em; font-family: 'Century Schoolbook', 'Century Schoolbook L', 'Times New Roman', Times, serif; color: #0f172a; }
 @media screen and (max-width: 720px) { body { width: 80%; max-width: none; } }
 h1 { text-align: center; }
@@ -673,9 +673,6 @@ let html_shell ~title ~body ~css ~katex_css ~js =
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="A tutorial on Hindley Milner type inference.">
 <title>%s</title>
-<link rel="preload" href="/static/CenturySchL-Roma.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="/static/CenturySchL-Ital.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="/static/DejaVuSansMono.woff2" as="font" type="font/woff2" crossorigin>
 <style>%s</style>
 <style>%s</style>
 </head>
