@@ -7,6 +7,21 @@ let write_file path content = Out_channel.write_all path ~data:content
 let ensure_dir d =
   if not (Stdlib.Sys.file_exists d) then Stdlib.Sys.mkdir d 0o755
 
+let katex_css_inline () : string =
+  let temp = Stdlib.Filename.temp_file "katex-bin" ".txt" in
+  let _ =
+    Stdlib.Sys.command
+      (Printf.sprintf "command -v katex > %s 2>/dev/null"
+         (Stdlib.Filename.quote temp))
+  in
+  let bin = String.strip (read_file temp) in
+  Stdlib.Sys.remove temp;
+  if String.is_empty bin then ""
+  else
+    let prefix = Stdlib.Filename.dirname (Stdlib.Filename.dirname bin) in
+    let path = prefix ^ "/lib/node_modules/katex/dist/katex.min.css" in
+    if Stdlib.Sys.file_exists path then read_file path else ""
+
 (* Longer prefixes must come first so prefix matches do not shadow each other. *)
 let unicode_subs : (string * string) list = [
   "...", "\\dots ";
@@ -577,6 +592,12 @@ let transform (doc : Cmarkit.Doc.t) : Cmarkit.Doc.t =
   Cmarkit.Mapper.map_doc m doc
 
 let baseline_css = {|
+@font-face { font-family: 'Century Schoolbook'; src: url('/static/CenturySchL-Roma.woff2') format('woff2'), url('/static/CenturySchL-Roma.woff') format('woff'), url('/static/CenturySchL-Roma.ttf') format('truetype'); font-weight: normal; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Century Schoolbook'; src: url('/static/CenturySchL-Bold.woff2') format('woff2'), url('/static/CenturySchL-Bold.woff') format('woff'), url('/static/CenturySchL-Bold.ttf') format('truetype'); font-weight: bold; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Century Schoolbook'; src: url('/static/CenturySchL-Ital.woff2') format('woff2'), url('/static/CenturySchL-Ital.woff') format('woff'), url('/static/CenturySchL-Ital.ttf') format('truetype'); font-weight: normal; font-style: italic; font-display: swap; }
+@font-face { font-family: 'Century Schoolbook'; src: url('/static/CenturySchL-BoldItal.woff2') format('woff2'), url('/static/CenturySchL-BoldItal.woff') format('woff'), url('/static/CenturySchL-BoldItal.ttf') format('truetype'); font-weight: bold; font-style: italic; font-display: swap; }
+@font-face { font-family: 'DejaVu Sans Mono'; src: url('/static/DejaVuSansMono.woff2') format('woff2'), url('/static/DejaVuSansMono.woff') format('woff'), url('/static/DejaVuSansMono.ttf') format('truetype'); font-weight: normal; font-style: normal; font-display: swap; }
+@font-face { font-family: 'DejaVu Sans Mono'; src: url('/static/DejaVuSansMono-Bold.woff2') format('woff2'), url('/static/DejaVuSansMono-Bold.woff') format('woff'), url('/static/DejaVuSansMono-Bold.ttf') format('truetype'); font-weight: bold; font-style: normal; font-display: swap; }
 body { max-width: 40em; margin: 2em auto; padding: 0 1em; font-family: 'Century Schoolbook', 'Century Schoolbook L', 'Times New Roman', Times, serif; color: #0f172a; }
 @media screen and (max-width: 720px) { body { width: 80%; max-width: none; } }
 h1 { text-align: center; }
@@ -621,7 +642,7 @@ nav.toc > details > ul { padding-left: 1em; margin: 0; }
 nav.toc li { margin: 0.1em 0; }
 |}
 
-let html_shell ~title ~body ~css ~js =
+let html_shell ~title ~body ~css ~katex_css ~js =
   Printf.sprintf
     {|<!doctype html>
 <html lang="en">
@@ -630,7 +651,9 @@ let html_shell ~title ~body ~css ~js =
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="A tutorial on Hindley Milner type inference.">
 <title>%s</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.min.css">
+<link rel="preload" href="/static/CenturySchL-Roma.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/DejaVuSansMono.woff2" as="font" type="font/woff2" crossorigin>
+<style>%s</style>
 <style>%s</style>
 </head>
 <body>
@@ -641,7 +664,7 @@ let html_shell ~title ~body ~css ~js =
 </body>
 </html>
 |}
-    title css body js
+    title katex_css css body js
 
 let () =
   let src_path =
@@ -666,7 +689,7 @@ let () =
   in
   let js = String.concat ~sep:"\n" (List.rev !widget_js) in
   let html =
-    html_shell ~title:"Hindley-Milner Type Inference" ~body ~css ~js
+    html_shell ~title:"Hindley-Milner Type Inference" ~body ~css ~katex_css:(katex_css_inline ()) ~js
   in
   write_file out_path html;
   print_endline ("wrote " ^ out_path)
