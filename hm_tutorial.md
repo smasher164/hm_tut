@@ -1,3 +1,5 @@
+# Type Inference (Part 1)
+
 Welcome to part 1 of my tutorial series on type inference!
 This post will cover
 - The Damas-Hindley-Milner type system
@@ -18,7 +20,9 @@ We assume you understand
 All the code in this article can be found in the companion repository https://github.com/smasher164/hm_tut. Each file under the lib directory corresponds to the features added in each section of this article.
 
 Type inference is the process of taking some expression that represents (part of) a program and returning its type.
+
 If the expression is invalid, i.e. it does some invalid operation according to the rules of your language (like adding a `bool` to a `string`), type inference will fail.
+
 If the expression lacks the sufficient information to return a type, i.e. it is missing a binding in its scope or type information for a binding, type inference will fail.
 
 In this way, type inference is a superset of type-checking. Another term that is used synonymously is type reconstruction.
@@ -28,14 +32,15 @@ What type inference is useful for:
 - Validating that a program is type-safe, i.e. the program is safe to compile and execute and won't encounter a TypeError.
 - Using types to generate code. For example, knowing the types of a struct's fields can help you determine the struct's layout.
 
-Aside: The formal definition of type safety is that "well-typed programs do not get stuck". What this means is if you have an interpreter for a language, and you pass it a program that's been successfully type-checked, it will never reach an unexpected state where it doesn't know how to evaluate something. For example, a multiplication operator in a VM might expect there to be two operands on the stack. Having fewer than two operands would be unexpected.
+> Aside: The formal definition of type safety is that "well-typed programs do not get stuck". What this means is if you have an interpreter for a language, and you pass it a program that's been successfully type-checked, it will never reach an unexpected state where it doesn't know how to evaluate something. For example, a multiplication operator in a VM might expect there to be two operands on the stack. Having fewer than two operands would be unexpected.
 
 Different kinds of type systems have different requirements and limitations to type inference.
+
 For instance, subtyping might allow a `List<Square>` to be passed into any function that expects a `List<Rectangle>`. Overloading might require some automatic resolution scheme (based on the number of parameters, types, etc...) to find the correct overload for a function. A borrow checker might want to infer the lifetime of a function parameter based on the lifetime of another. In the case of this article, we'll be covering an ML-like type system.
 
 ML has the unique property of being able to infer the type of an expression in a program without *any* annotations. What's more is that the types it infers for an expression are as general as they can be.
 
-Aside: This is known as the principal type property. If an expression's principal type is P and the expression can also be given the type T, you can always substitute some of the type variables in P to get T.
+> Aside: This is known as the principal type property. If an expression's principal type is P and the expression can also be given the type T, you can always substitute some of the type variables in P to get T.
 
 For most expressions, ML will return types based on the constructors used. For example, an expression like `true && false` would be inferred as `bool`. A lambda like `fun x -> x` when applied to `true` would be given the type `bool -> bool`. However, for `let` bindings, ML will perform a process called *let generalization*. What happens here is that the type of the variable bound by the `let` declaration will be made as polymorphic as possible.
 
@@ -50,7 +55,6 @@ T id<T>(T x) {
     return x;
 }
 ```
-
 When `id` gets applied to `true`, its type gets *instantiated* such that `bool` (the type of `true`) can be substituted into it, resulting in a concrete instance of `id` whose type is `bool -> bool`, where the resulting type of the expression `id true` ends up being `bool`.
 
 How do we actually do this process of *generalization* and *instantiation*? How are we able to invoke this generic function without passing in a type argument? How does the type of a function get inferred based on the type of its argument? There are certain rules, known under *Damas-Hindley-Milner* (typically shortened to HM for Hindley-Milner) type inference, that we have to follow to make inferring types like this possible.
@@ -63,10 +67,7 @@ Let's start with our signature for `infer`.
 ```ocaml
 let rec infer (env : env) (exp : exp) : texp = ...
 ```
-
-`infer` takes an `env` and an `exp` and returns a `texp`.
-
-`env` represents our environment.
+`infer` takes the environment in the form of an `env` and an expression in the form of an `exp`, returning a typed expression in the form of `texp`.
 ```ocaml
 type env = (id * bind) list
 ```
@@ -121,6 +122,7 @@ type ty =
 ```
 We will discuss `tv`'s role shortly.
 
+## Unification
 
 Here's the expression we're trying to type-check:
 ```ocaml
@@ -238,6 +240,7 @@ Now we start to recurse down both sides and...
 TyBool = TyArrow(TyBool, ?1)
 ```
 And immediately, we reach a contradiction. `TyBool` is not an arrow type -- it is just `TyBool`.
+
 Since this equation would have to hold in order for this program to type-check, the program does not type-check.
 
 This process of solving equations on types is called *unification*. When we unify two types, we are trying to make them equal to each other by solving any type variables in them. If there's no solution to those type variables such that the two types can be made equal, then like with the previous example, the program will not type-check.
@@ -263,6 +266,12 @@ A solved type variable is what we consider "bound". Here, we call it `Link`, as 
 tv := Link(other_type)
 ```
 
+### Try unification
+
+Here's a small tool for visualizing the process of unification. Enter a few constraints of the form `T1 = T2` (one per line), then click Step to watch each one break down and link metavars to their solutions.
+
+<!-- widget: unification-stepper -->
+
 Now let's consider what the implementation of `infer` actually looks like. Given some `exp`, we want to return a `texp` (its typed version). Let's start by matching on the `exp`
 ```ocaml
 let rec infer (env : env) (exp : exp) : texp =
@@ -280,22 +289,21 @@ The `EBool` case is trivially known, since its type is `TyBool`.
   | EBool b -> TEBool (b, TyBool) (* A true/false value is of type Bool. *)
 ```
 
-Aside:
-The formation rule for booleans looks like
-```
-        
-WF-Bool:-------------
-         ⊢ Bool type 
-```
-This is basically an axiom that says `Bool` is a known type.
-
-The typing rule for booleans would look like
-```       
-        b ∈ {true, false} 
-T-Bool:-------------------
-           Γ ⊢ b : Bool   
-```
-This basically says given `b` which is one of `true` or `false`, `b` is of type `Bool` under the typing context `Γ`.
+> Aside: The formation rule for booleans looks like
+> ```
+>         
+> WF-Bool:-------------
+>          ⊢ Bool type 
+> ```
+> This is basically an axiom that says `Bool` is a known type.
+> 
+> The typing rule for booleans would look like
+> ```       
+>         b ∈ {true, false} 
+> T-Bool:-------------------
+>            Γ ⊢ b : Bool   
+> ```
+> This basically says given `b` which is one of `true` or `false`, `b` is of type `Bool` under the typing context `Γ`.
 
 For `EVar`, there is some mention of a variable -- the `x` being passed as an argument to `foo` in `fun x -> foo x`, for example. We want to return the type of that variable. In order to do that, this variable must have already been declared somewhere before this occurence, like as the parameter to a lambda. Because of that, we know it should be in the environment. We just have to search our environment from the innermost scope to outermost for this variable, and grab its type. Let's write that function
 
@@ -308,6 +316,7 @@ let lookup_var_type name (e : env) : ty =
 ```
 
 We just call a function from the `List.Assoc` module and search an association list for a `VarBind` that matches `name`.
+
 After invoking this helper on our environment, we get a type associated with the variable name and return it up.
 
 So all in all, the `EVar` case looks like
@@ -318,13 +327,13 @@ So all in all, the `EVar` case looks like
     TEVar (name, var_ty)
 ```
 
-Aside: The typing rule for variables would look like
-```
-       VarBind(x, T) ∈ Γ 
-T-Var:-------------------
-           Γ ⊢ x : T     
-```
-This basically says that if `x` has a binding to the type `T` inside the context (environment) `Γ`, then we can assume that under the context `Γ`, `x` has the type `T`. Bewildering, I know.
+> Aside: The typing rule for variables would look like
+> ```
+>        VarBind(x, T) ∈ Γ 
+> T-Var:-------------------
+>            Γ ⊢ x : T     
+> ```
+> This basically says that if `x` has a binding to the type `T` inside the context (environment) `Γ`, then we can assume that under the context `Γ`, `x` has the type `T`. Bewildering, I know.
 
 The next case is `ELam`. Given some lambda like `fun param -> body`, we want to return its type, which will be a `TyArrow`. First, we need the type for `param`. If you recall from the example, `param`'s type gets inferred based on the argument of the lambda. What we need to do is associate it with a fresh `Unbound` type variable (call it `ty_param`), so then when the argument's type *is* available, the type variable will get bound to it (they will be unified).
 
@@ -345,6 +354,7 @@ let fresh_unbound_var () =
 ```
 
 After creating a fresh type variable for the `param`, we add an entry to our `env`ironment for the `param` and this type variable. Then we can type-check the body of the lambda with that new environment.
+
 Finally, the resultant type will be the arrow type going from `ty_param` with whatever the type of the lambda's body is. 
 
 So ultimately, the `ELam` case looks like
@@ -371,23 +381,21 @@ let typ (texp : texp) : ty =
   | TELam (_, _, ty) -> ty
 ```
 
-Aside:
-
-The formation rule for function types looks like
-```
-          ⊢ A type    ⊢ B type 
-WF-Arrow:----------------------
-              ⊢ A -> B type    
-```
-This says that if `A` and `B` are types, then `A -> B` is a type.
-
-The typing rule for lambdas looks like
-```
-       Γ, VarBind(x, A) ⊢ e : B 
-T-Lam:--------------------------
-        Γ ⊢ fun x -> e : A -> B 
-```
-If under the context `Γ`, `x` (the parameter)'s type being `A` lets us infer that `e` (the body)'s type is `B`, then we can assume that the lambda's type is `A -> B`.
+> Aside: The formation rule for function types looks like
+> ```
+>           ⊢ A type    ⊢ B type 
+> WF-Arrow:----------------------
+>               ⊢ A -> B type    
+> ```
+> This says that if `A` and `B` are types, then `A -> B` is a type.
+> 
+> The typing rule for lambdas looks like
+> ```
+>        Γ, VarBind(x, A) ⊢ e : B 
+> T-Lam:--------------------------
+>         Γ ⊢ fun x -> e : A -> B 
+> ```
+> If under the context `Γ`, `x` (the parameter)'s type being `A` lets us infer that `e` (the body)'s type is `B`, then we can assume that the lambda's type is `A -> B`.
 
 The final case is `EApp`. Given some function `fn` and an argument `arg`, we want to return the type of the result after applying `fn` to `arg`. We'll first want the types of `fn` and `arg`. We can simply call `infer` recursively on `fn` and `arg`, respectively. `fn`'s type should be some `TyArrow(?A, ?B)`. `arg`'s type will be some `?C`.
 
@@ -413,13 +421,13 @@ All in all, the final case of `infer`, `EApp`, looks like
     TEApp (fn, arg, ty_res)
 ```
 
-Aside: The typing rules for lambda application look like
-```
-       Γ ⊢ f : A -> B    Γ ⊢ x : A 
-T-App:-----------------------------
-               Γ ⊢ f x : B         
-```
-If under the context `Γ`, `f` (the lambda)'s type is `A -> B` and `x` (the argument)'s type is `A`, then `f x` (`f` applied to `x`)'s type is `B`.
+> Aside: The typing rules for lambda application look like
+> ```
+>        Γ ⊢ f : A -> B    Γ ⊢ x : A 
+> T-App:-----------------------------
+>                Γ ⊢ f x : B         
+> ```
+> If under the context `Γ`, `f` (the lambda)'s type is `A -> B` and `x` (the argument)'s type is `A`, then `f x` (`f` applied to `x`)'s type is `B`.
 
 The crux of implementing this case is in how `unify` works, so let's discuss that now.
 
@@ -460,7 +468,6 @@ Next, we'll deal with the `TyArrow` case. If both types are `TyArrow`, a.k.a we'
     unify f1 f2;
     unify d1 d2;
 ```
-
 Finally, we get to the interesting case--when one of the types is a type variable.
 You might be wondering why this case is interesting. After all, if one of the types is a type variable, isn't all we have to do just to bind it to the other type, like `tv := Link ty`?
 
@@ -491,7 +498,7 @@ can always be compared by its name `tree`.
 
 However, with the recursive types we're talking about disallowing, the `tree` type is an infinite structure that needs to be compared while memoizing cycles.
 
-Aside: One can think of cyclic types like these as recursive type aliases or anonymous recursive types. The formal name for these is *equirecursive types*, and they exist in some languages like ocaml with the `-rectypes` flag, and MLScript, which implements algebraic subtyping. A tree type would be expressed as `μT. Leaf | Branch(int, T, T)`. Notice how the recursion is extracted out as the parameter `T`. `μ` is basically a fixed-point combinator for types. When unifying a type variable with another type, we can normalize both types into this `μ` constructor, and then compare them. With nominal types and pattern matching, we explicitly fold and unfold types. This is what's called an *iso-recursive type*.
+> Aside: One can think of cyclic types like these as recursive type aliases or anonymous recursive types. The formal name for these is *equirecursive types*, and they exist in some languages like ocaml with the `-rectypes` flag, and MLScript, which implements algebraic subtyping. A tree type would be expressed as `μT. Leaf | Branch(int, T, T)`. Notice how the recursion is extracted out as the parameter `T`. `μ` is basically a fixed-point combinator for types. When unifying a type variable with another type, we can normalize both types into this `μ` constructor, and then compare them. With nominal types and pattern matching, we explicitly fold and unfold types. This is what's called an *iso-recursive type*.
 
 This process of checking for a cycle before binding a type variable is called an *occurs* check, since we are checking that a type variable does not *occur* in the type we are binding to.
 
@@ -546,7 +553,7 @@ type prog = exp
 
 You can find and run these examples in [lib/one.ml](lib/one.ml).
 
-## Examples
+### Examples
 
 ```ocaml
 typecheck_prog
@@ -562,11 +569,11 @@ typecheck_prog
 ```
 Output: `UnificationFailure "failed to unify type bool -> ?1 with bool"`
 
-# Simple extensions
+## Simple extensions
 
 Let's extend our language with some simple extensions, namely `if` expressions for branching on a `bool`, `let` bindings with type annotations, mutually recursive `let rec` bindings, and nominal type declarations.
 
-# If expressions
+## If expressions
 
 To start, `if` expressions require us to add a new variant to our `exp`
 ```ocaml
@@ -607,19 +614,19 @@ The resultant type of the `if` can be either one of the types of those branches,
     TEIf (cond, thn, els, typ thn)
 ```
 
-Aside: The typing rules for `if` expressions are
-```
-      Γ ⊢ cond : Bool    Γ ⊢ e1 : T    Γ ⊢ e2 : T 
-T-If:---------------------------------------------
-            Γ ⊢ if cond then e1 else e2 : T       
-```
-This says if under the context `Γ`, `cond` (the expression in the condition)'s type is `Bool`, `e1` (the expression in the `then` branch)'s type is `T`, and `e2` (the expression in the `else` branch)'s type is `T`, then `if cond then e1 else e2`'s type is `T`.
+> Aside: The typing rules for `if` expressions are
+> ```
+>       Γ ⊢ cond : Bool    Γ ⊢ e1 : T    Γ ⊢ e2 : T 
+> T-If:---------------------------------------------
+>             Γ ⊢ if cond then e1 else e2 : T       
+> ```
+> This says if under the context `Γ`, `cond` (the expression in the condition)'s type is `Bool`, `e1` (the expression in the `then` branch)'s type is `T`, and `e2` (the expression in the `else` branch)'s type is `T`, then `if cond then e1 else e2`'s type is `T`.
 
 That was pretty quick! Let's test it out.
 
 You can find and run these examples in [lib/two.ml](lib/two.ml).
 
-## Examples
+### Examples
 
 ```ocaml
 (* if true then false else (fun x -> x) true *)
@@ -633,7 +640,7 @@ EIf(EBool true, EBool false, ELam("x", EVar "x"))
 ```
 Output: `UnificationFailure "failed to unify type bool with ?0 -> ?0"`
 
-# Let bindings
+## Let bindings
 
 A let binding is an expression like `let x = true in f x` or `let x : bool = true in f x`. Basically, it's a way of binding an identifier (with an optional annotation) to the result of evaluating some expression, and using that binding in the evaluation of another expression. Apart from the optional annotation, `let x = exp in body` is basically sugar for `(fun x -> body) exp`. However, since we want to handle type annotations, and set ourselves up for generalization later on, we will handle this case independently.
 
@@ -705,29 +712,29 @@ Our `ELet` case ends up looking like
     TELet ((id, ann, rhs), body, typ body)
 ```
 
-Aside: Here are the typing rules for `ELet`. We split them into two rules, one for a let binding without an annotation and one for a let binding with an annotation.
-
-```
-       Γ ⊢ rhs : A    Γ, VarBind(x, A) ⊢ body : B 
-T-Let:--------------------------------------------
-               Γ ⊢ let x = rhs in body : B        
-```
-This says that under the context, if `rhs` can be inferred to be the type `A`, and the context extended with `x` having the type `A` lets us give `body` the type `B`, then the entire expression `let x = rhs in body` can be given the type `B`.
-
-```
-          ⊢ A type    Γ ⊢ rhs : A    Γ, VarBind(x, A) ⊢ body : B 
-T-LetAnn:--------------------------------------------------------
-                      Γ ⊢ let x : A = rhs in body : B            
-```
-This says that if `A` is a valid type, `rhs` can be inferred to be the type `A`, and the context extended with `x` annotated with the type `A` lets us give `body` the type `B`, then the entire annotated expression `let x: A = rhs in body` can be given the type `B`.
-
-Note that the only thing that's really changed here is that we need to make sure that `A` is a well-formed annotation. Other than that, the first rule is deriving `A` and in the second, `A` is an annotation supplied by the programmer.
+> Aside: Here are the typing rules for `ELet`. We split them into two rules, one for a let binding without an annotation and one for a let binding with an annotation.
+> 
+> ```
+>        Γ ⊢ rhs : A    Γ, VarBind(x, A) ⊢ body : B 
+> T-Let:--------------------------------------------
+>                Γ ⊢ let x = rhs in body : B        
+> ```
+> This says that under the context, if `rhs` can be inferred to be the type `A`, and the context extended with `x` having the type `A` lets us give `body` the type `B`, then the entire expression `let x = rhs in body` can be given the type `B`.
+> 
+> ```
+>           ⊢ A type    Γ ⊢ rhs : A    Γ, VarBind(x, A) ⊢ body : B 
+> T-LetAnn:--------------------------------------------------------
+>                       Γ ⊢ let x : A = rhs in body : B            
+> ```
+> This says that if `A` is a valid type, `rhs` can be inferred to be the type `A`, and the context extended with `x` annotated with the type `A` lets us give `body` the type `B`, then the entire annotated expression `let x: A = rhs in body` can be given the type `B`.
+> 
+> Note that the only thing that's really changed here is that we need to make sure that `A` is a well-formed annotation. Other than that, the first rule is deriving `A` and in the second, `A` is an annotation supplied by the programmer.
 
 Now let's test it out!
 
 You can find and run these examples in [lib/three.ml](lib/three.ml).
 
-## Examples
+### Examples
 
 ```ocaml
 typecheck_prog
@@ -743,7 +750,7 @@ typecheck_prog
 ```
 Output: `TypeError "expression does not have type bool"`
 
-# (Mutually) recursive definitions
+## (Mutually) recursive definitions
 
 If we wanted to write a recursive `factorial` function or mutually recursive `is_even`/`is_odd` functions, we need to add a `let rec` construct. To make type inference work in this situation, we need `factorial` and `is_even`/`is_odd` in the environments of the function bodies when type-checking them. We also want to make sure there aren't any duplicate definitions.
 
@@ -813,23 +820,23 @@ Overall, our `ELetRec` case looks like
     TELetRec (decls, body, typ body)
 ```
 
-Aside: Here's the typing rule for `ELetRec`.
-
-```
-          Γ_rec = Γ, { VarBind(x, A_x) | x ∈ decls }    Γ_rec ⊢ rhs_x : A_x for each x ∈ decls    Γ_rec ⊢ body : B 
-T-LetRec:----------------------------------------------------------------------------------------------------------
-                                      Γ ⊢ let rec { x = rhs_x | x ∈ decls } in body : B                            
-```
-
-`decls` is the set of names being bound in the let-rec. `A_x` is the type for binding `x` and `rhs_x` is its right-hand-side. `Γ_rec` is the context `Γ` extended with all of the bindings, so each `rhs_x` can refer to any of them. This rule basically says that if each `rhs_x` has the type `A_x` under `Γ_rec`, and the body has the type `B` under `Γ_rec`, then `let rec { x = rhs_x | x ∈ decls } in body` has type `B`.
-
-For annotated bindings, assuming `A_x` is well-formed, `A_x` comes from its annotation with its quantified type variables made rigid in `Γ_rec`.
+> Aside: Here's the typing rule for `ELetRec`.
+> 
+> ```
+>           Γ_rec = Γ, { VarBind(x, A_x) | x ∈ decls }    Γ_rec ⊢ rhs_x : A_x for each x ∈ decls    Γ_rec ⊢ body : B 
+> T-LetRec:----------------------------------------------------------------------------------------------------------
+>                                       Γ ⊢ let rec { x = rhs_x | x ∈ decls } in body : B                            
+> ```
+> 
+> `decls` is the set of names being bound in the let-rec. `A_x` is the type for binding `x` and `rhs_x` is its right-hand-side. `Γ_rec` is the context `Γ` extended with all of the bindings, so each `rhs_x` can refer to any of them. This rule basically says that if each `rhs_x` has the type `A_x` under `Γ_rec`, and the body has the type `B` under `Γ_rec`, then `let rec { x = rhs_x | x ∈ decls } in body` has type `B`.
+> 
+> For annotated bindings, assuming `A_x` is well-formed, `A_x` comes from its annotation with its quantified type variables made rigid in `Γ_rec`.
 
 That's our `let rec` case! Let's test it out with some examples. At this point, manually writing out the AST is going to get tedious, so I'll just show the source. If you're following along with the repo, you'll notice that we've integrated so that we can avoid writing the AST out by hand.
 
 You can find and run these examples in [lib/four.ml](lib/four.ml).
 
-## Examples
+### Examples
 
 ```ocaml
 typecheck_source {|
@@ -849,7 +856,7 @@ typecheck_source {|
 ```
 Output: `UnificationFailure "failed to unify type bool -> bool with bool"`
 
-# Type declarations
+## Type declarations
 
 An example type declaration in this language will be of the form
 ```
@@ -866,7 +873,7 @@ foo.baz
 ```
 A declaration is *nominal*. So another type with the same fields like
 ```
-type Qux {
+type Qux = {
     bar: bool
     baz: bool -> bool
 }
@@ -1141,48 +1148,46 @@ and unify env (t1 : ty) (t2 : ty) : unit =
 ```
 With that, we've added type declarations and inference for record literals into our language.
 
-Aside:
-
-Here is the formation rule for user-defined types:
-```
-          TypeBind(T, { l : T_l | l ∈ L }) ∈ Γ    Γ ⊢ T_l type for each l ∈ L 
-WF-Tycon:---------------------------------------------------------------------
-                                       Γ ⊢ T type                             
-```
-This rule basically says if T is a user-defined type, in order for it to be well-formed, each of its field's types must be well-defined.
-
-Note: From this point on, Γ needs to be threaded throughout formation rules for well-formedness to hold, including WF-Bool and WF-Arrow. For example, WF-Arrow relies on `A` and `B` being well-formed for `A -> B` to be well-formed.
-
-The typing rule for records:
-
-```
-          TypeBind(T, { l : T_l | l ∈ L }) ∈ Γ    Γ ⊢ e_l : T_l for each l ∈ L 
-T-Record:----------------------------------------------------------------------
-                               Γ ⊢ { l = e_l | l ∈ L } : T                     
-```
-This says that if there is a type T in the context whose fields match that of the record, the record's type is T.
-
-The rule for with expressions:
-```
-        Γ ⊢ r : T    TypeBind(T, { l : T_l | l ∈ L }) ∈ Γ    M ⊆ L    Γ ⊢ e_m : T_m for each m ∈ M 
-T-With:--------------------------------------------------------------------------------------------
-                                    Γ ⊢ { r with m = e_m | m ∈ M } : T                             
-```
-This says that if r is a record of type T that contains each of the fields in the with expression, then the returned value of the with expression is also of type T.
-
-and for projection:
-```
-        Γ ⊢ r : T    TypeBind(T, { l : T_l | l ∈ L }) ∈ Γ    f ∈ L 
-T-Proj:------------------------------------------------------------
-                               Γ ⊢ r.f : T_f                       
-```
-This says that if r is a record of type T containing a field f, then r.f has the type of that field in T.
+> Aside: Here is the formation rule for user-defined types
+> ```
+>           TypeBind(T, { l : T_l | l ∈ L }) ∈ Γ    Γ ⊢ T_l type for each l ∈ L 
+> WF-Tycon:---------------------------------------------------------------------
+>                                        Γ ⊢ T type                             
+> ```
+> This rule basically says if T is a user-defined type, in order for it to be well-formed, each of its field's types must be well-defined.
+> 
+> Note: From this point on, Γ needs to be threaded throughout formation rules for well-formedness to hold, including WF-Bool and WF-Arrow. For example, WF-Arrow relies on `A` and `B` being well-formed for `A -> B` to be well-formed.
+> 
+> The typing rule for records:
+> 
+> ```
+>           TypeBind(T, { l : T_l | l ∈ L }) ∈ Γ    Γ ⊢ e_l : T_l for each l ∈ L 
+> T-Record:----------------------------------------------------------------------
+>                                Γ ⊢ { l = e_l | l ∈ L } : T                     
+> ```
+> This says that if there is a type T in the context whose fields match that of the record, the record's type is T.
+> 
+> The rule for with expressions:
+> ```
+>         Γ ⊢ r : T    TypeBind(T, { l : T_l | l ∈ L }) ∈ Γ    M ⊆ L    Γ ⊢ e_m : T_m for each m ∈ M 
+> T-With:--------------------------------------------------------------------------------------------
+>                                     Γ ⊢ { r with m = e_m | m ∈ M } : T                             
+> ```
+> This says that if r is a record of type T that contains each of the fields in the with expression, then the returned value of the with expression is also of type T.
+> 
+> and for projection:
+> ```
+>         Γ ⊢ r : T    TypeBind(T, { l : T_l | l ∈ L }) ∈ Γ    f ∈ L 
+> T-Proj:------------------------------------------------------------
+>                                Γ ⊢ r.f : T_f                       
+> ```
+> This says that if r is a record of type T containing a field f, then r.f has the type of that field in T.
 
 Let's take a look at some examples.
 
 You can find and run these examples in [lib/five.ml](lib/five.ml).
 
-## Examples
+### Examples
 
 ```ocaml
 typecheck_source {|
@@ -1200,7 +1205,7 @@ typecheck_source {|
 ```
 Output: `RowMismatch "{y: bool, ...} and {x: bool}"`
 
-# Polymorphism
+## Polymorphism
 
 Up until now, the language we have type-checked does not have any polymorphism.
 For example, in the following program, `f` cannot be applied both to a value of type `A` and to a value of type `B`.
@@ -1229,7 +1234,7 @@ fB b
 
 But when we look at `f`, nothing about its definition requires it to be restricted to `A`. How do we make `f` polymorphic (or generic) over its arguments?
 
-# Instantiation
+## Instantiation
 
 We'd like `f`'s type to be something like `forall 'a. 'a -> 'a`. But hang on, how would we even use a type like that? We can't exactly unify `'a` with `A`. We need to treat `'a` as a placeholder (or type parameter) that gets substituted with a concrete type argument. This process of taking a generic type and replacing its type parameters with concrete types is called *instantiation*. When `f` gets applied to an `A` or `B`, we look up its type (which will now be generic), and instantiate it to have its type parameters substituted with fresh type variables.
 
@@ -1256,13 +1261,12 @@ fun f (g: forall a. a -> a) => (g 1, g "hello")
 ```
 However, this is not very limiting in practice. Most of the polymorphic functions you'd ever want to write can be written in HM.
 
-Aside:
-There are some useful exceptions though. For example, Haskell can use the `ST` monad to scope an action to a particular thread with the signature
-```haskell
-runST :: forall a. (forall s. ST s a) -> a
-```
-
-Another example is with existentials, like Rust's `dyn` traits or Go's interface values. These can be encoded with higher-rank polymorphism. `exists X. T` (which is roughly like `dyn Trait`) can be written as `forall Y. (forall X. T -> Y) -> Y`. However, this latter feature can be added on its own, and doesn't necessarily need higher-rank polymorphism/polymorphic lambda calculus/System F.
+> Aside: There are some useful exceptions though. For example, Haskell can use the `ST` monad to scope an action to a particular thread with the signature
+> ```haskell
+> runST :: forall a. (forall s. ST s a) -> a
+> ```
+> 
+> Another example is with existentials, like Rust's `dyn` traits or Go's interface values. These can be encoded with higher-rank polymorphism. `exists X. T` (which is roughly like `dyn Trait`) can be written as `forall Y. (forall X. T -> Y) -> Y`. However, this latter feature can be added on its own, and doesn't necessarily need higher-rank polymorphism/polymorphic lambda calculus/System F.
 
 Next, we will update the definition of `VarBind` to hold a `generic_ty` instead of a `ty`. This is needed because, if you consider the example above, `f`'s type in the environment needs to be generic so it can be instantiated. So now `bind` is defined as
 ```ocaml
@@ -1300,7 +1304,9 @@ So in our `EVar` case, after calling `lookup_var_type`, we want to `inst`antiate
 ```
 
 Now let's delve into how `inst` is implemented. Let's run through a simple example first, to get the point across.
+
 Given the generic type `forall 'a 'b. 'a -> ('b -> 'a)`, if `a` had the fresh type variable `?0` and `b` had the fresh type variable `?1`, the instantiated type should be `?0 -> (?1 -> ?0)`.
+
 More concretely, if the `generic_ty` is
 ```ocaml
 {
@@ -1421,7 +1427,7 @@ In the case where there is a generic annotation, we extend the environment with 
 
 Now what if we want to have a generic function that doesn't need a type annotation? This is where generalization comes in.
 
-# Generalization
+## Generalization
 
 Now that we've covered instantiation of generic types and checking generic annotations, it's time to get to the meat of Hindley Milner--generalization. Simply put, generalization takes a type that's not generic and makes it generic by turning its unbound type variables into type parameters.
 
@@ -1740,6 +1746,13 @@ in
     let body = infer env body in
     TELet ((id, ann, rhs), body, typ body)
 ```
+
+### Try let generalization
+
+Here's a tool to visualize the process of let generalization. Pick the naive rule or the scope-checked one, then step through to see how the trace differs between them.
+
+<!-- widget: let-generalization-scope -->
+
 The `ELetRec` case is slightly more complicated. To type-check recursive let bindings, we want to *delay* generalization until after each let binding is inferred. This means that mutually recursive bindings will not be referencing generic versions of each other. Why is this? Turns out, that referencing generic versions of each other while fully inferring their types is undecidable.
 
 Here is an example of polymorphic recursion from the [ocaml docs](https://v2.ocaml.org/manual/polymorphism.html#s%3Apolymorphic-recursion).
@@ -1755,7 +1768,7 @@ let rec depth = function
 
 Looks like a fairly simple function, but the issue here is that the inner call to `depth n` ends up trying to unify `'a nested` with `'a list nested`, which is not satisfiable. The type checker doesn't realize that the `'a nested` depth was initially called on is different from the `'a list nested` that's the element type. This can be solved by providing an explicit annotation to `depth`, like `forall 'a. 'a nested -> int`. However, there are other issues related to polymorphic recursion in that it can't be monomorphized, and leads to inefficient implementation. In practice, not having polymorphic recursion is not an issue. Most of the recursive functions you'll ever want to define can be written and inferred in this setting.
 
-Aside: The undecidability of type inference for polymorphic recursion was shown by Fritz Henglein in the paper "Type Inference with Polymorphic Recursion". They show that semi-unification reduces to type inference for polymorphic recursion, which implies it's undecidable.
+> Aside: The undecidability of type inference for polymorphic recursion was shown by Fritz Henglein in the paper "Type Inference with Polymorphic Recursion". They show that semi-unification reduces to type inference for polymorphic recursion, which implies it's undecidable.
 
 We still want to `enter_scope()` at the beginning. After that, we run `as_rigid` on each declaration's annotation (if it has one), storing the result in a list called `prepared` so we can reuse it across the next few passes.
 ```ocaml
@@ -1837,43 +1850,43 @@ Overall, our updated implementation of `ELetRec` looks like
     TELetRec (tdecls, body, typ body)
 ```
 
-Aside: Here's our typing rule for `ELet`.
-
-```
-       Γ ⊢ rhs : A    vars = FV(A) \ FV(Γ)    Γ, VarBind(x, ∀ vars. A) ⊢ body : B 
-T-Let:----------------------------------------------------------------------------
-                               Γ ⊢ let x = rhs in body : B                        
-```
-
-`FV(A)` and `FV(Γ)` are the sets of type variables that appear free in `A` and `Γ` respectively. We write `vars` for `FV(A) \ FV(Γ)`, the type variables free in `A` but not in `Γ`. This rule basically says that if `rhs` has the type `A` in `Γ`, and `Γ` extended with `x` having the type `∀ vars. A` lets us give the body the type `B`, then `let x = rhs in body` has type `B`.
-
-And here's our typing rule for `ELetRec`.
-
-```
-          Γ_rec = Γ, { VarBind(x, A_x) | x ∈ decls }          vars_x = FV(A_x) \ FV(Γ) for each x ∈ decls 
-         ---------------------------------------------------------------------------------------------------
-T-LetRec: Γ_rec ⊢ rhs_x : A_x for each x ∈ decls    Γ, { VarBind(x, ∀ vars_x. A_x) | x ∈ decls } ⊢ body : B 
-         ---------------------------------------------------------------------------------------------------
-                                  Γ ⊢ let rec { x = rhs_x | x ∈ decls } in body : B                        
-```
-
-Here, we have the same `decls`, `A_x`, `rhs_x`, and `Γ_rec` as in the original T-LetRec rule. `vars_x` is the set of type variables we generalize for the binding `x`. This rule basically says that if each `rhs_x` has the type `A_x` in `Γ_rec`, and `Γ` extended with each `x` having the type `∀ vars_x. A_x` lets us give the body the type `B`, then `let rec { x = rhs_x | x ∈ decls } in body` has type `B`. Note that when the rhs is inferred, `x` is not polymorphic (i.e. it's a monotype), so in our formulation of T-LetRec, polymorphic recursion isn't supported.
-
-The original Damas-Milner formulation factors generalization out as its own rule:
-
-```
-          Γ ⊢ e : A    a ∉ FV(Γ) 
-T-Gen-DM:------------------------
-               Γ ⊢ e : ∀a. A     
-```
-
-This says that if `e` has the type `A` in `Γ`, and `a` is any type variable not free in `Γ`, then `e` can be given the type `∀a. A`. With T-Gen-DM in place, the simpler versions of T-Let and T-LetRec don't need to generalize themselves. They assume `A` is already polymorphic where needed, and just thread it through. Chaining applications of T-Gen-DM for each variable in `FV(A) \ FV(Γ)` gives us the same generalization present in our T-Let and T-LetRec rules.
+> Aside: Here's our typing rule for `ELet`.
+> 
+> ```
+>        Γ ⊢ rhs : A    vars = FV(A) \ FV(Γ)    Γ, VarBind(x, ∀ vars. A) ⊢ body : B 
+> T-Let:----------------------------------------------------------------------------
+>                                Γ ⊢ let x = rhs in body : B                        
+> ```
+> 
+> `FV(A)` and `FV(Γ)` are the sets of type variables that appear free in `A` and `Γ` respectively. We write `vars` for `FV(A) \ FV(Γ)`, the type variables free in `A` but not in `Γ`. This rule basically says that if `rhs` has the type `A` in `Γ`, and `Γ` extended with `x` having the type `∀ vars. A` lets us give the body the type `B`, then `let x = rhs in body` has type `B`.
+> 
+> And here's our typing rule for `ELetRec`.
+> 
+> ```
+>           Γ_rec = Γ, { VarBind(x, A_x) | x ∈ decls }          vars_x = FV(A_x) \ FV(Γ) for each x ∈ decls 
+>          ---------------------------------------------------------------------------------------------------
+> T-LetRec: Γ_rec ⊢ rhs_x : A_x for each x ∈ decls    Γ, { VarBind(x, ∀ vars_x. A_x) | x ∈ decls } ⊢ body : B 
+>          ---------------------------------------------------------------------------------------------------
+>                                   Γ ⊢ let rec { x = rhs_x | x ∈ decls } in body : B                        
+> ```
+> 
+> Here, we have the same `decls`, `A_x`, `rhs_x`, and `Γ_rec` as in the original T-LetRec rule. `vars_x` is the set of type variables we generalize for the binding `x`. This rule basically says that if each `rhs_x` has the type `A_x` in `Γ_rec`, and `Γ` extended with each `x` having the type `∀ vars_x. A_x` lets us give the body the type `B`, then `let rec { x = rhs_x | x ∈ decls } in body` has type `B`. Note that when the rhs is inferred, `x` is not polymorphic (i.e. it's a monotype), so in our formulation of T-LetRec, polymorphic recursion isn't supported.
+> 
+> The original Damas-Milner formulation factors generalization out as its own rule:
+> 
+> ```
+>           Γ ⊢ e : A    a ∉ FV(Γ) 
+> T-Gen-DM:------------------------
+>                Γ ⊢ e : ∀a. A     
+> ```
+> 
+> This says that if `e` has the type `A` in `Γ`, and `a` is any type variable not free in `Γ`, then `e` can be given the type `∀a. A`. With T-Gen-DM in place, the simpler versions of T-Let and T-LetRec don't need to generalize themselves. They assume `A` is already polymorphic where needed, and just thread it through. Chaining applications of T-Gen-DM for each variable in `FV(A) \ FV(Γ)` gives us the same generalization present in our T-Let and T-LetRec rules.
 
 Woo! That was a doozy. But we got through it now. How about we take a look at some examples to celebrate?
 
 You can find and run these examples in [lib/six.ml](lib/six.ml).
 
-## Examples
+### Examples
 
 ```ocaml
 typecheck_source {|
@@ -1918,7 +1931,7 @@ typecheck_source "(fun x -> let y = x in y) true true"
 ```
 Output: `UnificationFailure "failed to unify type bool with bool -> ?2"`
 
-# Row Polymorphism
+## Row Polymorphism
 
 Currently, we are able to infer the types of expressions involving records, as long as they ultimately unify to some concrete type. However, one of the beautiful things about let generalization in Hindley Milner is that we can define a function without a type signature that can operate on values of different types. What if we could apply that polymorphism to records?
 
@@ -1945,7 +1958,7 @@ forall 'a 'b. 'a :: { x : 'b, ... } => 'a -> 'b`
 ```
 The piece between `::` and `=>` is a row constraint, and it corresponds directly to the `OpenRow` the expression-level inference produced for `r`. So row polymorphism is really about carrying that constraint through `gen`, `inst`, and `unify`. The expression-level inference doesn't have to change at all.
 
-Aside: Our approach borrows ideas from Atsushi Ohori's [A Polymorphic Record Calculus and Its Compilation](https://dl.acm.org/doi/10.1145/218570.218572), including the `::` syntax for kind-based constraints on type variables. There are many other approaches to row polymorphism. Mitchell Wand's original row variables and Didier Rémy's presence/absence type system handle simple rows where labels must be unique. Daan Leijen's [Extensible records with scoped labels](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/scopedlabels.pdf) lifts that restriction with scoped rows. More recent work by Morris and McKinna in [Abstracting Extensible Data Types: Or, Rows by Any Other Name](https://dl.acm.org/doi/10.1145/3290325) introduces a system called Rose that abstracts over rows via qualified types and captures both simple and scoped rows. Its successor, [Generic Programming with Extensible Data Types](https://dl.acm.org/doi/10.1145/3607843) by Hubers and Morris, extends Rose with first-class labels and generic programming over rows, enabling polymorphic equality on extensible records and variants.
+> Aside: Our approach borrows ideas from Atsushi Ohori's [A Polymorphic Record Calculus and Its Compilation](https://dl.acm.org/doi/10.1145/218570.218572), including the `::` syntax for kind-based constraints on type variables. There are many other approaches to row polymorphism. Mitchell Wand's original row variables and Didier Rémy's presence/absence type system handle simple rows where labels must be unique. Daan Leijen's [Extensible records with scoped labels](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/scopedlabels.pdf) lifts that restriction with scoped rows. More recent work by Morris and McKinna in [Abstracting Extensible Data Types: Or, Rows by Any Other Name](https://dl.acm.org/doi/10.1145/3290325) introduces a system called Rose that abstracts over rows via qualified types and captures both simple and scoped rows. Its successor, [Generic Programming with Extensible Data Types](https://dl.acm.org/doi/10.1145/3607843) by Hubers and Morris, extends Rose with first-class labels and generic programming over rows, enabling polymorphic equality on extensible records and variants.
 
 Okay so given that type signature, it's clear we need to update `generic_ty` and `TypeVarBind` to carry row constraints. Then we need to update `gen`, `inst`, and `unify` accordingly.
 ```ocaml
@@ -2085,49 +2098,49 @@ Now the `TypeVarBind` case just becomes a call to `check_rigid_subset`.
     ...
 ```
 
-Aside: Here are the typing rules for projection and with-expressions on row-polymorphic type variables. They mirror T-Proj and T-With from the section on [Type declarations](#type-declarations), but get their fields from `TypeVarBind` instead of `TypeBind`.
-
-```
-            Γ ⊢ r : a    TypeVarBind(a, { l : T_l | l ∈ L, ... }) ∈ Γ    f ∈ L 
-T-Proj-Row:--------------------------------------------------------------------
-                                       Γ ⊢ r.f : T_f                           
-```
-
-```
-            Γ ⊢ r : a    TypeVarBind(a, { l : T_l | l ∈ L, ... }) ∈ Γ    M ⊆ L    Γ ⊢ e_m : T_m for each m ∈ M 
-T-With-Row:----------------------------------------------------------------------------------------------------
-                                            Γ ⊢ { r with m = e_m | m ∈ M } : a                                 
-```
-
-We update the T-Let rule to hold row constraints in the quantified type, where the row constraint for type variable `a` is denoted by `R_a`.
-
-```
-                                Γ ⊢ rhs : A                          
-      ---------------------------------------------------------------
-       vars = FV(A) \ FV(Γ)    constraints = { a :: R_a | a ∈ vars } 
-T-Let:---------------------------------------------------------------
-             Γ, VarBind(x, ∀ vars. constraints => A) ⊢ body : B      
-      ---------------------------------------------------------------
-                        Γ ⊢ let x = rhs in body : B                  
-```
-
-T-LetRec is similarly updated to carry row constraints in polymorphic types, but for each binding.
-
-```
-                                              Γ_rec = Γ, { VarBind(x, A_x) | x ∈ decls }                                     
-         --------------------------------------------------------------------------------------------------------------------
-          vars_x = FV(A_x) \ FV(Γ) for each x ∈ decls           constraints_x = { a :: R_a | a ∈ vars_x } for each x ∈ decls 
-T-LetRec:--------------------------------------------------------------------------------------------------------------------
-          Γ_rec ⊢ rhs_x : A_x for each x ∈ decls    Γ, { VarBind(x, ∀ vars_x. constraints_x => A_x) | x ∈ decls } ⊢ body : B 
-         --------------------------------------------------------------------------------------------------------------------
-                                           Γ ⊢ let rec { x = rhs_x | x ∈ decls } in body : B                                 
-```
+> Aside: Here are the typing rules for projection and with-expressions on row-polymorphic type variables. They mirror T-Proj and T-With from the section on [Type declarations](#type-declarations), but get their fields from `TypeVarBind` instead of `TypeBind`.
+> 
+> ```
+>             Γ ⊢ r : a    TypeVarBind(a, { l : T_l | l ∈ L, ... }) ∈ Γ    f ∈ L 
+> T-Proj-Row:--------------------------------------------------------------------
+>                                        Γ ⊢ r.f : T_f                           
+> ```
+> 
+> ```
+>             Γ ⊢ r : a    TypeVarBind(a, { l : T_l | l ∈ L, ... }) ∈ Γ    M ⊆ L    Γ ⊢ e_m : T_m for each m ∈ M 
+> T-With-Row:----------------------------------------------------------------------------------------------------
+>                                             Γ ⊢ { r with m = e_m | m ∈ M } : a                                 
+> ```
+> 
+> We update the T-Let rule to hold row constraints in the quantified type, where the row constraint for type variable `a` is denoted by `R_a`.
+> 
+> ```
+>                                 Γ ⊢ rhs : A                          
+>       ---------------------------------------------------------------
+>        vars = FV(A) \ FV(Γ)    constraints = { a :: R_a | a ∈ vars } 
+> T-Let:---------------------------------------------------------------
+>              Γ, VarBind(x, ∀ vars. constraints => A) ⊢ body : B      
+>       ---------------------------------------------------------------
+>                         Γ ⊢ let x = rhs in body : B                  
+> ```
+> 
+> T-LetRec is similarly updated to carry row constraints in polymorphic types, but for each binding.
+> 
+> ```
+>                                               Γ_rec = Γ, { VarBind(x, A_x) | x ∈ decls }                                     
+>          --------------------------------------------------------------------------------------------------------------------
+>           vars_x = FV(A_x) \ FV(Γ) for each x ∈ decls           constraints_x = { a :: R_a | a ∈ vars_x } for each x ∈ decls 
+> T-LetRec:--------------------------------------------------------------------------------------------------------------------
+>           Γ_rec ⊢ rhs_x : A_x for each x ∈ decls    Γ, { VarBind(x, ∀ vars_x. constraints_x => A_x) | x ∈ decls } ⊢ body : B 
+>          --------------------------------------------------------------------------------------------------------------------
+>                                            Γ ⊢ let rec { x = rhs_x | x ∈ decls } in body : B                                 
+> ```
 
 Now let's look at some examples.
 
 You can find and run these examples in [lib/seven.ml](lib/seven.ml).
 
-## Examples
+### Examples
 
 In this example, `'r` is a rigid type variable in the environment with an OpenRow constraint `{ x : bool, ... }`. The body's `r.x` creates an OpenRow constraint `{ x : ?_ }` on `r`'s type variable. `check_rigid_subset` confirms `r`'s row is contained in `'r`'s row.
 ```ocaml
@@ -2171,7 +2184,7 @@ Output: `RowMismatch "{x: bool, ...} and {y: bool}"`
 
 That's row polymorphism! We can write functions that are polymorphic over the record types they operate on. Note that we didn't have to touch `infer` at all. All of our changes happened with `generic_ty`, `gen`, `inst`, `unify`, plus some new helpers. This makes sense given that nothing about our expression language has changed. We just want to make our functions more generic.
 
-# Generic type declarations
+## Generic type declarations
 
 You'll notice in our examples above, the type declarations are not generic. However, in languages like Java or ML, you have access to types like `List` that are instantiated with some type argument. Similarly to row polymorphism, we won't need to change anything about our expression-level inference. All of the work happens at the level of gen, inst, unify, and occurs. The first thing we'll want to do is modify our definition of `tycon` to contain type parameters.
 ```ocaml
@@ -2333,39 +2346,39 @@ match (t1, t2) with
 ```
 We apply the type to get its underlying record type and union its row constraints with those of our type variable that we're unifying.
 
-Aside: We update our formation rules for type constructors by updating `TypeBind` to carry a list of type parameters.
-
-```
-          TypeBind(T, params, _) ∈ Γ    Γ ⊢ arg_p type for each p ∈ params 
-WF-Tycon:------------------------------------------------------------------
-                                   Γ ⊢ T args type                         
-```
-
-We add T-Record-App, T-Proj-App, and T-With-App to mirror T-Record, T-Proj, and T-With from the section on [Type declarations](#type-declarations), but they substitute the type arguments into the tycon's body. We write `T[params ↦ args]` for `T` with each parameter in `params` replaced by the corresponding argument in `args`.
-
-```
-              TypeBind(T, params, { l : T_l | l ∈ L }) ∈ Γ    Γ ⊢ arg_p type for each p ∈ params    Γ ⊢ e_l : T_l[params ↦ args] for each l ∈ L 
-T-Record-App:-----------------------------------------------------------------------------------------------------------------------------------
-                                                               Γ ⊢ { l = e_l | l ∈ L } : T args                                                 
-```
-
-```
-            Γ ⊢ r : T args    TypeBind(T, params, { l : T_l | l ∈ L }) ∈ Γ    f ∈ L 
-T-Proj-App:-------------------------------------------------------------------------
-                                  Γ ⊢ r.f : T_f[params ↦ args]                      
-```
-
-```
-            Γ ⊢ r : T args    TypeBind(T, params, { l : T_l | l ∈ L }) ∈ Γ    M ⊆ L    Γ ⊢ e_m : T_m[params ↦ args] for each m ∈ M 
-T-With-App:------------------------------------------------------------------------------------------------------------------------
-                                                    Γ ⊢ { r with m = e_m | m ∈ M } : T args                                        
-```
+> Aside: We update our formation rules for type constructors by updating `TypeBind` to carry a list of type parameters.
+> 
+> ```
+>           TypeBind(T, params, _) ∈ Γ    Γ ⊢ arg_p type for each p ∈ params 
+> WF-Tycon:------------------------------------------------------------------
+>                                    Γ ⊢ T args type                         
+> ```
+> 
+> We add T-Record-App, T-Proj-App, and T-With-App to mirror T-Record, T-Proj, and T-With from the section on [Type declarations](#type-declarations), but they substitute the type arguments into the tycon's body. We write `T[params ↦ args]` for `T` with each parameter in `params` replaced by the corresponding argument in `args`.
+> 
+> ```
+>               TypeBind(T, params, { l : T_l | l ∈ L }) ∈ Γ    Γ ⊢ arg_p type for each p ∈ params    Γ ⊢ e_l : T_l[params ↦ args] for each l ∈ L 
+> T-Record-App:-----------------------------------------------------------------------------------------------------------------------------------
+>                                                                Γ ⊢ { l = e_l | l ∈ L } : T args                                                 
+> ```
+> 
+> ```
+>             Γ ⊢ r : T args    TypeBind(T, params, { l : T_l | l ∈ L }) ∈ Γ    f ∈ L 
+> T-Proj-App:-------------------------------------------------------------------------
+>                                   Γ ⊢ r.f : T_f[params ↦ args]                      
+> ```
+> 
+> ```
+>             Γ ⊢ r : T args    TypeBind(T, params, { l : T_l | l ∈ L }) ∈ Γ    M ⊆ L    Γ ⊢ e_m : T_m[params ↦ args] for each m ∈ M 
+> T-With-App:------------------------------------------------------------------------------------------------------------------------
+>                                                     Γ ⊢ { r with m = e_m | m ∈ M } : T args                                        
+> ```
 
 And so ends our process of typechecking generic type declarations! Let's look at some examples.
 
 You can find and run these examples in [lib/eight.ml](lib/eight.ml).
 
-## Examples
+### Examples
 
 Here's the `box bool` example from earlier. `{ x = true }` is inferred as a `ClosedRow { x : bool }` that's checked against the annotation. `apply_tyapp` takes `box` and substitutes `bool` for `'a` in its body, giving us `{ x : bool }`, which matches that closed row constraint.
 ```ocaml
@@ -2395,7 +2408,7 @@ typecheck_source {|
 ```
 Output: `RowMismatch "{x: bool} and {x: bool, y: bool}"`
 
-# Side-effects
+## Side-effects
 
 Up until now, this language has been pure. You would think adding features like mutability and other side-effects would not be a problem for a polymorphic type system like ours. However, there are gotchas. Let's say we added mutability to our language with a `Ref 'a` type. For example, `Ref int` corresponds to a memory location containing an `int` value. A `Ref 'a` can be built with a `ref` function, whose type is `forall 'a. 'a -> Ref 'a`. You can retrieve the value at a `Ref 'a` via `deref`, whose type is `forall 'a. Ref 'a -> 'a`. A shorthand operator for this is `*r`, where `r` is the name of the reference. Finally, you can update the value at an existing memory location via `update`, whose type is `forall 'a. Ref 'a -> 'a -> Unit` (`Unit` is just an empty record type). A shorthand syntax for this operation is `*r = v`, where `r` is the name of the reference and `v` is the value being stored.
 
@@ -2429,7 +2442,7 @@ This is called the *syntactic* value restriction. It is the criterion Standard M
 
 There are other approaches here, including OCaml's that does a deeper syntactic check to allow nested let bindings, record projection, some lambda applications, etc... Other approaches incude changing our evaluation model from eager to lazy, analyzing the bodies of functions being applied to see if there are observable side effects, using an effect system to track effects of expressions, etc... That last one (which Koka employs) is kind of the ultimate solution to the problem, because we get precise tracking at the type-level for expressions that don't perform side effects and can be generalized. However, discussing effect systems is outside the scope of this article, and restricting generalization to syntactic values turns out to not be a problem in practice.
 
-Aside: Stephen Dolan recently took a different approach in [Rethinking the Value Restriction](https://www.youtube.com/watch?v=C1g_PO_xcI8) that supports full rank-1 types in ML, restricts generalization to lambda abstractions, and lazily instantiates foralls only when forced to by application or projection. There is some nuance around covariance annotations and curried functions, but consider taking a look at this talk!
+> Aside: Stephen Dolan recently took a different approach in [Rethinking the Value Restriction](https://www.youtube.com/watch?v=C1g_PO_xcI8) that supports full rank-1 types in ML, restricts generalization to lambda abstractions, and lazily instantiates foralls only when forced to by application or projection. There is some nuance around covariance annotations and curried functions, but consider taking a look at this talk!
 
 Let's take a look at how we can modify `infer` to implement the value restriction. We'll start with `is_value`, a helper that determines if a typed expression is syntactically a value.
 
@@ -2464,37 +2477,37 @@ The `ELetRec` case gets the same treatment in the `List.map` that produces `gene
 
 Putting this all together, we have implemented the value restriction. If we added `ref`, `deref`, and `update` built-ins, our language would correctly handle mutability.
 
-Aside: Given the `is_value` predicate we defined in this section, the typing rules for let and let-rec are updated to generalize only when the rhs is a value.
-
-```
-                                Γ ⊢ rhs : A                          
-      ---------------------------------------------------------------
-       vars = FV(A) \ FV(Γ)    constraints = { a :: R_a | a ∈ vars } 
-      ---------------------------------------------------------------
-T-Let:      S = ∀ vars. constraints => A if is_value(rhs) else A     
-      ---------------------------------------------------------------
-                        Γ, VarBind(x, S) ⊢ body : B                  
-      ---------------------------------------------------------------
-                        Γ ⊢ let x = rhs in body : B                  
-```
-
-```
-                                           Γ_rec = Γ, { VarBind(x, A_x) | x ∈ decls }                                 
-         -------------------------------------------------------------------------------------------------------------
-          vars_x = FV(A_x) \ FV(Γ) for each x ∈ decls    constraints_x = { a :: R_a | a ∈ vars_x } for each x ∈ decls 
-         -------------------------------------------------------------------------------------------------------------
-T-LetRec:             S_x = ∀ vars_x. constraints_x => A_x if is_value(rhs_x) else A_x, for each x ∈ decls            
-         -------------------------------------------------------------------------------------------------------------
-          Γ_rec ⊢ rhs_x : A_x for each x ∈ decls                        Γ, { VarBind(x, S_x) | x ∈ decls } ⊢ body : B 
-         -------------------------------------------------------------------------------------------------------------
-                                       Γ ⊢ let rec { x = rhs_x | x ∈ decls } in body : B                              
-```
+> Aside: Given the `is_value` predicate we defined in this section, the typing rules for let and let-rec are updated to generalize only when the rhs is a value.
+> 
+> ```
+>                                 Γ ⊢ rhs : A                          
+>       ---------------------------------------------------------------
+>        vars = FV(A) \ FV(Γ)    constraints = { a :: R_a | a ∈ vars } 
+>       ---------------------------------------------------------------
+> T-Let:      S = ∀ vars. constraints => A if is_value(rhs) else A     
+>       ---------------------------------------------------------------
+>                         Γ, VarBind(x, S) ⊢ body : B                  
+>       ---------------------------------------------------------------
+>                         Γ ⊢ let x = rhs in body : B                  
+> ```
+> 
+> ```
+>                                            Γ_rec = Γ, { VarBind(x, A_x) | x ∈ decls }                                 
+>          -------------------------------------------------------------------------------------------------------------
+>           vars_x = FV(A_x) \ FV(Γ) for each x ∈ decls    constraints_x = { a :: R_a | a ∈ vars_x } for each x ∈ decls 
+>          -------------------------------------------------------------------------------------------------------------
+> T-LetRec:             S_x = ∀ vars_x. constraints_x => A_x if is_value(rhs_x) else A_x, for each x ∈ decls            
+>          -------------------------------------------------------------------------------------------------------------
+>           Γ_rec ⊢ rhs_x : A_x for each x ∈ decls                        Γ, { VarBind(x, S_x) | x ∈ decls } ⊢ body : B 
+>          -------------------------------------------------------------------------------------------------------------
+>                                        Γ ⊢ let rec { x = rhs_x | x ∈ decls } in body : B                              
+> ```
 
 Let's take a look at some examples.
 
 You can find and run these examples in [lib/nine.ml](lib/nine.ml).
 
-## Examples
+### Examples
 
 We can simulate the example from before with our type-checker. We add definitions and signatures for `Ref`, `ref`, `deref`, and `update`. We can't really implement `update` without an actual memory store, so we just return an empty `Unit` record.
 
@@ -2529,6 +2542,6 @@ typecheck_source {|
 ```
 Output: `Unit`
 
-# Conclusion
+## Conclusion
 
 The features covered in this article already give you a very sound and flexible system to program in, with generics, row polymorphism, side effects, and annotation-less type-safety. As mentioned, see the companion repository https://github.com/smasher164/hm_tut for the source corresponding to each section. In the next post, we'll cover how to implement typeclasses/traits and their various extensions.
