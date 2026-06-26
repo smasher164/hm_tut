@@ -30,12 +30,16 @@ module Singleparam_traits() = struct
     type_params : id list;
     ty : record_ty;
   }
-  (* A generic type. Should be read as forall p1::r1..pn::rn. ty, where each
-    pi is a type parameter and ri its row constraint (NoRow for plain
-    parameters). It is separated from ty because in HM, a forall can
-  only be at the top level of a type. *)
+  (* A predicate Tr t states that the type t satisfies the trait Tr. *)
+  type pred = { trait : id; arg : ty }
+  (* A generic type. Should be read as forall p1::r1..pn::rn. P1, ..., Pk => ty,
+    where each pi is a type parameter with row constraint ri (NoRow for
+    plain parameters) and each Pj is a predicate that the type parameters
+    must satisfy. It is separated from ty because in HM, a forall can only
+    be at the top level of a type. *)
   type generic_ty = {
     type_params : (id * row_constraint) list;
+    predicates : pred list;
     ty : ty;
   }
   type bind =
@@ -198,6 +202,17 @@ module Singleparam_traits() = struct
   let current_scope = ref 1
   let enter_scope () = Int.incr current_scope
   let leave_scope () = Int.decr current_scope
+  (* Global state that stores the trait predicates emitted during type inference. *)
+  let emitted : pred list ref = ref []
+
+  (* Prepend predicate to the emitted list. *)
+  let emit (p : pred) = emitted := p :: !emitted
+
+  (* Remove the predicates from emitted that satisfy f and return them. *)
+  let take_emitted ~f =
+    let taken, kept = List.partition_tf !emitted ~f in
+    emitted := kept;
+    taken
 
   (* Generate a fresh unbound type variable with a unique name, an optional
     row constraint, and the current scope. *)
@@ -357,9 +372,29 @@ module Singleparam_traits() = struct
   (* The environment stores generic types, but sometimes we need to associate
     a non-generalized type to a variable. This function wraps a type into a
     trivial generic type (no quantified parameters). *)
-  let dont_generalize ty : generic_ty = { type_params = []; ty }
+  let dont_generalize ty : generic_ty = { type_params = []; predicates = []; ty }
+
+  (* The scope of a predicate is the outermost scope of the type variables it
+     mentions. *)
+  let scope_of_pred (p : pred) : int =
+    let rec scope_of_ty acc ty =
+      match force ty with
+      | TyVar { contents = Unbound (_, row, scope) } ->
+        min (scope_of_row acc row) scope
+      | TyArrow (a, b) -> scope_of_ty (scope_of_ty acc a) b
+      | TyApp tys -> List.fold tys ~init:acc ~f:scope_of_ty
+      | TyVar { contents = Link _ } | TyBool | TyName _ -> acc
+    and scope_of_row acc = function
+      | NoRow -> acc
+      | OpenRow flds | ClosedRow flds ->
+        List.fold flds ~init:acc ~f:(fun acc (_, ty) -> scope_of_ty acc ty)
+    in
+    scope_of_ty Int.max_value p.arg
 
   let gen (ty: ty) : generic_ty =
+    let local_preds =
+      take_emitted ~f:(fun p -> scope_of_pred p > !current_scope)
+    in
     let type_params : (id, row_constraint) Hashtbl.t = Hashtbl.create (module String) in
     let rec gen' ty =
       match force ty with
@@ -374,11 +409,14 @@ module Singleparam_traits() = struct
       | ty -> ty
     in
     let ty = gen' ty in
+    let predicates =
+      List.map local_preds ~f:(fun p -> { p with arg = gen' p.arg })
+    in
     let type_params =
       Hashtbl.to_alist type_params
       |> List.sort ~compare:(fun (a,_) (b,_) -> String.compare a b)
     in
-    { type_params; ty }
+    { type_params; predicates; ty }
 
   (* Instantiate a generic type by replacing all the type parameters
    with fresh unbound type variables. Ensure that the same ID gets
@@ -395,6 +433,10 @@ module Singleparam_traits() = struct
         let TyVar tv = Hashtbl.find_exn tbl pid in
         let Unbound(id, _, scope) = !tv in
         tv := Unbound(id, map_row ~f:(substitute tbl) row, scope));
+    (* Emit each predicate with its argument substituted with the
+       fresh type variable from the table. *)
+    List.iter gty.predicates ~f:(fun p ->
+      emit { p with arg = substitute tbl p.arg });
     substitute tbl gty.ty
 
   (* Turn a generic_ty into its rigid form, so that when annotations are instantiated,
@@ -559,30 +601,8 @@ module Singleparam_traits() = struct
     check_no_unbound texp;
     texp
 
-  let convert_prog (ast_prog : Ast.prog) : prog =
-    Ast.map_prog
-      ~on_ty_bool:(fun () -> TyBool)
-      ~on_ty_arrow:(fun a b -> TyArrow (a, b))
-      ~on_ty_name:(fun x -> TyName x)
-      ~on_ty_app:(fun ts -> TyApp ts)
-      ~on_no_row:(fun () -> NoRow)
-      ~on_open_row:(fun flds -> OpenRow flds)
-      ~on_closed_row:(fun flds -> ClosedRow flds)
-      ~on_generic_ty:(fun ps ty -> { type_params = ps; ty })
-      ~on_tycon:(fun name type_params ty -> { name; type_params; ty })
-      ~on_let_decl:(fun id ann rhs -> (id, ann, rhs))
-      ~on_bool:(fun b -> EBool b)
-      ~on_var:(fun x -> EVar x)
-      ~on_lam:(fun x body -> ELam (x, body))
-      ~on_app:(fun f a -> EApp (f, a))
-      ~on_if:(fun c t e -> EIf (c, t, e))
-      ~on_record:(fun lit -> ERecord lit)
-      ~on_with:(fun rcd lit -> EWith (rcd, lit))
-      ~on_proj:(fun rcd fld -> EProj (rcd, fld))
-      ~on_let:(fun d body -> ELet (d, body))
-      ~on_letrec:(fun ds body -> ELetRec (ds, body))
-      ~on_prog:(fun tycons e -> (tycons, e))
-      ast_prog
+  let convert_prog (_ : Ast.prog) : prog =
+    failwith "TODO: extend mini-ml-parser to parse trait predicates"
 
   let typecheck_source src =
     src |> Parser.parse_string |> convert_prog |> typecheck_prog
