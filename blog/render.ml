@@ -687,6 +687,15 @@ nav.toc details summary::before { content: ''; position: absolute; left: 1px; to
 nav.toc details[open] summary::before { left: 0; top: 0.7em; border-top: 5px solid #64748b; border-bottom: none; border-left: 4px solid transparent; border-right: 4px solid transparent; }
 nav.toc details[open] summary { margin-bottom: 0.4em; }
 nav.toc ol, nav.toc ul { margin: 0; padding-left: 1.5em; list-style: none; }
+@media (max-width: 768px) {
+  nav.toc details[open] > ol,
+  nav.toc details[open] > ul {
+    max-height: 60vh;
+    overflow-y: auto;
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 32px), transparent);
+            mask-image: linear-gradient(to bottom, #000 calc(100% - 32px), transparent);
+  }
+}
 nav.toc > details > ul { padding-left: 1em; margin: 0; }
 nav.toc li { margin: 0.1em 0; }
 |}

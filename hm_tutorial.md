@@ -1583,7 +1583,7 @@ Note how the generalized type (the type of `y` on line 11) does not have `?0` as
 
 This leads us to ask another question. What happens when a type variable `tv` in an outer scope gets unified with a type `ty` containing type variables in an inner scope? Since we think of unification as equating two types, we should interpret this scenario as `ty` replacing all occurrences of `tv`. This means that all of the type variables inside of `ty` should have the scope of `tv` (a.k.a the outer scope). In implementation terms, this is the minimum of the two scopes.
 
-So what we want is when `unify`ing a `TyVar`  with another type, we traverse the other type for its type variables, and update their scope to be the minimum. If we take a look at our `TyVar` case in `unify`, we already do a traversal of the other type inside of `occurs`. We can take advantage of this and update the scope inside the occurs check.
+So what we want is when `unify`ing a `TyVar` with another type, we traverse the other type for its type variables, and update their scope to be the minimum. If we take a look at our `TyVar` case in `unify`, we already do a traversal of the other type inside of `occurs`. We can take advantage of this and update the scope inside the occurs check.
 ```ocaml
 | TyVar tv, ty | ty, TyVar tv ->
     (* If either type is a type variable, ensure that the type variable does

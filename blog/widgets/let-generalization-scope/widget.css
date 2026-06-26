@@ -125,6 +125,8 @@
   max-height: 460px;
   overflow-y: auto;
   overflow-x: auto;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+          mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
 }
 [data-widget="let-generalization-scope"] .lg-trace[hidden] {
   display: none;
