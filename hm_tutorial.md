@@ -2557,3 +2557,7 @@ Output: `Unit`
 ## Conclusion
 
 The features covered in this article already give you a very sound and flexible system to program in, with generics, row polymorphism, side effects, and annotation-less type safety. As mentioned, see the companion repository https://github.com/smasher164/hm_tut for the source corresponding to each section. In the next post, we'll cover how to implement typeclasses/traits and their various extensions.
+
+## Acknowledgements
+
+Thanks to Ashley Chekhova and others for their review feedback.

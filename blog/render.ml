@@ -705,8 +705,8 @@ body { max-width: 40em; margin: 2em auto; padding: 0 1em; font-family: 'Century 
 @media screen and (max-width: 720px) { body { width: 80%; max-width: none; } }
 h1 { text-align: center; }
 h1, h2, h3, h4 { font-weight: 100; line-height: 1.2; }
-h1 ~ h2 { text-align: center; }
-h1 ~ h4 { text-align: center; color: #64748b; font-style: italic; }
+h1 + h2 { text-align: center; }
+h1 + h4, h1 + h2 + h4 { text-align: center; color: #64748b; font-style: italic; }
 pre, code { font-family: 'DejaVu Sans Mono', ui-monospace, monospace; font-size: 0.9em; }
 pre code { font-size: 1em; }
 pre {
