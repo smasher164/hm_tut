@@ -249,8 +249,7 @@ let katex_render (tex : string) : string =
     Hashtbl.set katex_cache ~key:tex ~data:html;
     html
 
-let render_rule_html (rule : rule) : string =
-  let id = "rule-" ^ rule.name in
+let render_rule_html ~id (rule : rule) : string =
   let math = build_dfrac rule in
   let max_line_len =
     List.fold (rule.conclusion :: rule.premise_tiers) ~init:0
@@ -549,7 +548,8 @@ let block_mapper mapper block =
        let lines = String.split_lines raw in
        (match parse_rule lines with
         | Some rule ->
-          let html = render_rule_html rule in
+          let id = unique_slug ("rule-" ^ rule.name) in
+          let html = render_rule_html ~id rule in
           Mapper.ret (Block.Html_block (block_lines_of_string html, meta))
         | None -> Mapper.default)
      | Some "ocaml" ->

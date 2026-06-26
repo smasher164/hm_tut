@@ -38,6 +38,14 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+@media (max-width: 480px) {
+  [data-widget="unification-stepper"] .us-controls {
+    flex-wrap: wrap;
+  }
+  [data-widget="unification-stepper"] .us-controls button {
+    padding: 0.4em 0.6em;
+  }
+}
 [data-widget="unification-stepper"] .us-error {
   color: #b91c1c;
   margin-top: 0.5em;

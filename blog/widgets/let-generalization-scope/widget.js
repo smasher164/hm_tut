@@ -11,6 +11,9 @@
   const scopedRadio = root.querySelector('.lg-mode-scoped');
   const errorEl = root.querySelector('.lg-error');
   const traceEl = root.querySelector('.lg-trace');
+  const stateEl = root.querySelector('.lg-state');
+  const metavarsListEl = root.querySelector('.lg-state-metavars-list');
+  const envListEl = root.querySelector('.lg-state-env-list');
 
   const KEYWORDS = ['fun', 'let', 'in', 'true', 'false'];
 
@@ -360,15 +363,49 @@
 
   let state = { events: [], currentIndex: -1, mode: 'scoped', source: null };
 
+  function renderState(ev) {
+    while (metavarsListEl.firstChild) metavarsListEl.removeChild(metavarsListEl.firstChild);
+    if (ev.state.metavars.length === 0) {
+      metavarsListEl.appendChild(document.createTextNode('—'));
+    } else {
+      ev.state.metavars.forEach(r => {
+        const chip = document.createElement('span');
+        if (state.mode === 'scoped') {
+          chip.className = 'lg-scope-' + r.scope + (r.link ? ' lg-metavar-linked' : '');
+          chip.textContent = r.link ? r.id + ' ↦ ' + r.link : r.id + ': scope ' + r.scope;
+        } else {
+          chip.className = r.link ? 'lg-metavar-linked' : '';
+          chip.textContent = r.link ? r.id + ' ↦ ' + r.link : r.id;
+        }
+        metavarsListEl.appendChild(chip);
+      });
+    }
+    while (envListEl.firstChild) envListEl.removeChild(envListEl.firstChild);
+    if (!ev.state.env || ev.state.env.length === 0) {
+      envListEl.appendChild(document.createTextNode('—'));
+    } else {
+      ev.state.env.forEach(e => {
+        const entry = document.createElement('span');
+        entry.className = 'lg-state-env-entry';
+        entry.textContent = e.name + ': ' + e.scheme;
+        envListEl.appendChild(entry);
+      });
+    }
+  }
+
   function render() {
     if (state.events.length === 0) {
       traceEl.hidden = true;
+      stateEl.hidden = true;
       backBtn.disabled = true;
       stepBtn.disabled = true;
       resetBtn.disabled = true;
       return;
     }
     traceEl.hidden = false;
+    stateEl.hidden = false;
+    if (state.currentIndex >= 0) renderState(state.events[state.currentIndex]);
+    const prevScrollLeft = traceEl.scrollLeft;
     while (traceEl.firstChild) traceEl.removeChild(traceEl.firstChild);
 
     for (let i = 0; i <= state.currentIndex; i++) {
@@ -403,36 +440,12 @@
         row.appendChild(scope);
       }
 
-      const metavars = document.createElement('span');
-      metavars.className = 'lg-trace-metavars';
-      if (ev.state.metavars.length > 0) {
-        ev.state.metavars.forEach((r, idx) => {
-          if (idx > 0) metavars.appendChild(document.createTextNode(', '));
-          const chip = document.createElement('span');
-          if (state.mode === 'scoped') {
-            chip.className = 'lg-scope-' + r.scope + (r.link ? ' lg-metavar-linked' : '');
-            chip.textContent = r.link ? r.id + ' ↦ ' + r.link : r.id + ': ' + r.scope;
-          } else {
-            chip.className = r.link ? 'lg-metavar-linked' : '';
-            chip.textContent = r.link ? r.id + ' ↦ ' + r.link : r.id;
-          }
-          metavars.appendChild(chip);
-        });
-      }
-      row.appendChild(metavars);
-
-      const env = document.createElement('span');
-      env.className = 'lg-trace-env';
-      if (ev.state.env && ev.state.env.length > 0) {
-        env.textContent = ev.state.env.map(e => e.name + ': ' + e.scheme).join(', ');
-      }
-      row.appendChild(env);
-
       traceEl.appendChild(row);
     }
 
     const currentRow = traceEl.querySelector('.lg-trace-row-current');
     if (currentRow) currentRow.scrollIntoView({ block: 'nearest' });
+    traceEl.scrollLeft = prevScrollLeft;
     backBtn.disabled = state.currentIndex <= 0;
     stepBtn.disabled = state.currentIndex >= state.events.length - 1;
     resetBtn.disabled = false;
