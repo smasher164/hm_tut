@@ -2560,4 +2560,4 @@ The features covered in this article already give you a very sound and flexible 
 
 ## Acknowledgements
 
-Thanks to Ashley Chekhova and others for their review feedback.
+I'd like to thank Ashley Chekhova, Russell Johnston, and others for their helpful feedback.
