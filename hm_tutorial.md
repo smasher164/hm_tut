@@ -1,5 +1,7 @@
 # Type Inference (Part 1)
 
+#### June 25, 2026
+
 Welcome to part 1 of my tutorial series on type inference!
 This post will cover
 - The Damas-Hindley-Milner type system
@@ -1114,7 +1116,8 @@ other := Unbound(id, row)
 Next, if `tv_row` is a `NoRow`, i.e. it's a regular type variable without a row constraint, we do a standard occurs check between `tv` and `ty`.
 ```ocaml
 | _ when equal tv_row NoRow ->
-    (* If either type is a type variable, ensure that the type variable does not occur in the type. *)
+    (* If either type is a type variable, ensure that the type variable does
+       not occur in the type. *)
     occurs tv ty
 ```
 Otherwise, it must mean that `tv_row` has some row constraint and `ty` is not record-shaped, which means unification has failed.
@@ -1139,7 +1142,8 @@ Overall, the `TyVar` case of the match looks like
         let row = union_rows env tv_row other_row in
         other := Unbound(id, row)
     | _ when equal tv_row NoRow ->
-        (* If either type is a type variable, ensure that the type variable does not occur in the type. *)
+        (* If either type is a type variable, ensure that the type
+           variable does not occur in the type. *)
         occurs tv ty
     | _ ->
         (* ty is not record-like. Can't unify with a row. *)
@@ -1331,23 +1335,23 @@ TyArrow(a, TyArrow(b, a))
 
 The actual implementation of `inst` just needs to create a hash table mapping from a type parameter to a fresh unbound type variable, traverse over the type, and replace each reference to that type parameter with that type variable. 
 ```ocaml
-  (* Instantiate a generic type by replacing all the type parameters
+(* Instantiate a generic type by replacing all the type parameters
    with fresh unbound type variables. Ensure that the same ID gets
    mapped to the same unbound type variable by using an (id, ty) Hashtbl. *)
-  let inst (gty: generic_ty) : ty =
-    let tbl = Hashtbl.create (module String) in
-    List.iter gty.type_params ~f:(fun pid ->
-      Hashtbl.set tbl ~key:pid ~data:(fresh_unbound_var ()));
-    let rec inst' ty =
-      match force ty with
-      | TyName id as ty -> (
-        match Hashtbl.find tbl id with
-        | Some tv -> tv
-        | None -> ty)
-      | TyArrow (from, dst) -> TyArrow (inst' from, inst' dst)
-      | ty -> ty
-    in
-    if Hashtbl.is_empty tbl then gty.ty else inst' gty.ty
+let inst (gty: generic_ty) : ty =
+  let tbl = Hashtbl.create (module String) in
+  List.iter gty.type_params ~f:(fun pid ->
+    Hashtbl.set tbl ~key:pid ~data:(fresh_unbound_var ()));
+  let rec inst' ty =
+    match force ty with
+    | TyName id as ty -> (
+      match Hashtbl.find tbl id with
+      | Some tv -> tv
+      | None -> ty)
+    | TyArrow (from, dst) -> TyArrow (inst' from, inst' dst)
+    | ty -> ty
+  in
+  if Hashtbl.is_empty tbl then gty.ty else inst' gty.ty
 ```
 
 The next place things are different is `ELet` (and similarly `ELetRec`). Let's look at how `ELet` changes first. Because a let binding can have annotations and we now have generic types, those annotations can be polymorphic. Perhaps more interestingly, when a let binding is unannotated, it gets inferred to be as polymorphic as possible. This latter behavior is what we mentioned at the beginning of the tutorial as *generalization*. We'll cover the simple case of polymorphic bindings first, which is basically no inference, or rather, how to typecheck a let binding that has a polymorphic type annotation.
@@ -1612,7 +1616,8 @@ Since `Unbound` carries `row_constraint` as well as `scope` now, the destructure
 Now the overall occurs check looks like
 ```ocaml
 (* Occurs check: check if a type variable (src) occurs in a type (ty).
-   If it does, raise an exception. Otherwise, update the scopes of the type variables in ty to be the minimum of its scope and the scope of src. *)
+   If it does, raise an exception. Otherwise, update the scopes of the
+   type variables in ty to be the minimum of its scope and the scope of src. *)
 let rec occurs (src : tv ref) (ty : ty) : unit =
     (* Follow all the links. If we see a type variable, it will only be Unbound. *)
     match force ty with
