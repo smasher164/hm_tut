@@ -28,38 +28,38 @@ let katex_css_inline () : string =
     else ""
 
 (* Longer prefixes must come first so prefix matches do not shadow each other. *)
-let unicode_subs : (string * string) list = [
-  "...", "\\dots ";
-  "->", " \\to ";
-  "=>", "\\Rightarrow ";
-  "::", " :: ";
-  "↦", " \\mapsto ";
-  "⊢", " \\vdash ";
-  "⊆", " \\subseteq ";
-  "∀", "\\forall ";
-  "∈", " \\in ";
-  "∉", " \\notin ";
-  "→", " \\to ";
-  "Γ", "\\Gamma ";
-  "Δ", "\\Delta ";
-  "Σ", "\\Sigma ";
-  "α", "\\alpha ";
-  "β", "\\beta ";
-  "λ", "\\lambda ";
-  "μ", "\\mu ";
-  "σ", "\\sigma ";
-  "τ", "\\tau ";
-  "ε", "\\varepsilon ";
-  "ω", "\\omega ";
-  "ρ", "\\rho ";
-  "∅", " \\emptyset ";
-  "∧", " \\land ";
-  "∨", " \\lor ";
-  "≤", " \\le ";
-  "≥", " \\ge ";
-  "≠", " \\ne ";
-  "·", " \\cdot ";
-  "\\", " \\setminus ";
+let unicode_subs : (string * string * bool) list = [
+  "...", "\\dots ", false;
+  "->", "\\to ", true;
+  "=>", "\\Rightarrow ", true;
+  "::", "\\mathrel{::}", true;
+  "↦", "\\mapsto ", true;
+  "⊢", "\\vdash ", true;
+  "⊆", "\\subseteq ", true;
+  "∀", "\\forall ", false;
+  "∈", "\\in ", true;
+  "∉", "\\notin ", true;
+  "→", "\\to ", true;
+  "Γ", "\\Gamma ", false;
+  "Δ", "\\Delta ", false;
+  "Σ", "\\Sigma ", false;
+  "α", "\\alpha ", false;
+  "β", "\\beta ", false;
+  "λ", "\\lambda ", false;
+  "μ", "\\mu ", false;
+  "σ", "\\sigma ", false;
+  "τ", "\\tau ", false;
+  "ε", "\\varepsilon ", false;
+  "ω", "\\omega ", false;
+  "ρ", "\\rho ", false;
+  "∅", "\\emptyset ", false;
+  "∧", "\\land ", true;
+  "∨", "\\lor ", true;
+  "≤", "\\le ", true;
+  "≥", "\\ge ", true;
+  "≠", "\\ne ", true;
+  "·", "\\cdot ", true;
+  "\\", "\\setminus ", true;
 ]
 
 let keywords =
@@ -68,12 +68,26 @@ let keywords =
 
 let unicode_at s i =
   let n = String.length s in
-  List.find_map unicode_subs ~f:(fun (pat, latex) ->
+  List.find_map unicode_subs ~f:(fun (pat, latex, auto) ->
     let plen = String.length pat in
     if i + plen <= n
        && String.equal (String.sub s ~pos:i ~len:plen) pat
-    then Some (latex, plen)
+    then Some (latex, plen, auto)
     else None)
+
+let next_token_auto_spaced s i =
+  let n = String.length s in
+  let j = ref i in
+  while !j < n && Char.is_whitespace s.[!j] do Int.incr j done;
+  if !j >= n then false
+  else
+    match unicode_at s !j with
+    | Some (_, _, auto) -> auto
+    | None ->
+      let c = s.[!j] in
+      Char.equal c '|' || Char.equal c '=' ||
+      Char.equal c ':' || Char.equal c ',' ||
+      Char.equal c '}'
 
 let is_word_char c = Char.is_alphanum c || Char.equal c '_'
 
@@ -83,18 +97,22 @@ let to_latex (s : string) : string =
   let buf = Buffer.create (String.length s * 2) in
   let i = ref 0 in
   let n = String.length s in
+  let prev_auto = ref false in
   while !i < n do
     let c = s.[!i] in
     match unicode_at s !i with
-    | Some (latex, len) ->
+    | Some (latex, len, auto) ->
       Buffer.add_string buf latex;
+      prev_auto := auto;
       i := !i + len
     | None ->
       if Char.is_whitespace c then begin
-        Buffer.add_string buf "\\ ";
+        if not !prev_auto && not (next_token_auto_spaced s (!i + 1)) then
+          Buffer.add_string buf "\\ ";
         Int.incr i
       end else if Char.equal c '|' then begin
-        Buffer.add_string buf " \\mathrel{|} ";
+        Buffer.add_string buf "\\mathrel{|}";
+        prev_auto := true;
         Int.incr i
       end else if is_word_char c then begin
         let j = ref !i in
@@ -136,15 +154,23 @@ let to_latex (s : string) : string =
             else
               Buffer.add_string buf ("\\textit{" ^ escaped ^ "}")
         end;
+        prev_auto := false;
         i := !j
       end else if Char.equal c '{' then begin
         Buffer.add_string buf "\\{";
+        prev_auto := true;
         Int.incr i
       end else if Char.equal c '}' then begin
         Buffer.add_string buf "\\}";
+        prev_auto := false;
+        Int.incr i
+      end else if Char.equal c '=' || Char.equal c ':' || Char.equal c ',' then begin
+        Buffer.add_char buf c;
+        prev_auto := true;
         Int.incr i
       end else begin
         Buffer.add_char buf c;
+        prev_auto := false;
         Int.incr i
       end
   done;
@@ -208,26 +234,65 @@ let parse_rule (lines : string list) : rule option =
      | _ -> None)
   | _ -> None
 
-let tier_to_latex (tier : string) : string =
-  let parts =
-    Re.split (Re.Perl.compile_pat {|\s{2,}|}) tier
-    |> List.filter ~f:(fun s -> not (String.is_empty (String.strip s)))
-    |> List.map ~f:to_latex
+let utf8_char_count (s : string) : int =
+  let n = String.length s in
+  let count = ref 0 in
+  let i = ref 0 in
+  while !i < n do
+    let byte = Char.to_int s.[!i] in
+    if byte < 0x80 then begin Int.incr count; Int.incr i end
+    else if byte < 0xC0 then Int.incr i
+    else begin Int.incr count; Int.incr i end
+  done;
+  !count
+
+let split_premises (tier : string) : string list =
+  Re.split (Re.Perl.compile_pat {|\s{2,}|}) tier
+  |> List.filter ~f:(fun s -> not (String.is_empty (String.strip s)))
+
+let tier_natural_chars (tier : string) : int =
+  let parts = split_premises tier in
+  let n = List.length parts in
+  let parts_chars =
+    List.fold parts ~init:0 ~f:(fun acc s -> acc + utf8_char_count s)
   in
-  String.concat ~sep:" \\quad " parts
+  parts_chars + 4 * (max 0 (n - 1))
+
+let format_tier (tier : string) ~(bar_chars : int) : string =
+  let parts = split_premises tier in
+  match parts with
+  | [] -> ""
+  | [single] -> to_latex single
+  | _ ->
+    let n = List.length parts in
+    let parts_chars =
+      List.fold parts ~init:0 ~f:(fun acc s -> acc + utf8_char_count s)
+    in
+    let spaces = max (4 * (n - 1)) (bar_chars - parts_chars) in
+    let gap_chars = spaces / (n - 1) in
+    let gap_em = Float.max 1.0 (Float.of_int gap_chars *. 0.4) in
+    let gap = Printf.sprintf " \\hspace{%.2fem} " gap_em in
+    String.concat ~sep:gap (List.map parts ~f:to_latex)
 
 let build_dfrac (rule : rule) : string =
+  let pad = "\\vphantom{\\Big|}" in
+  let wrap t = pad ^ t ^ pad in
   let conclusion_tex = to_latex rule.conclusion in
-  let tier_texs = List.map rule.premise_tiers ~f:tier_to_latex in
+  let bar_chars =
+    let conclusion_w = utf8_char_count rule.conclusion in
+    let tier_ws = List.map rule.premise_tiers ~f:tier_natural_chars in
+    List.fold (conclusion_w :: tier_ws) ~init:0 ~f:max
+  in
+  let tier_texs = List.map rule.premise_tiers ~f:(format_tier ~bar_chars) in
   let numerator =
     match tier_texs with
     | [] -> "\\;"  (* axiom: thin space stands in for the empty premise *)
     | [t] -> t
     | first :: rest ->
       List.fold rest ~init:first ~f:(fun acc tier ->
-        "\\dfrac{" ^ acc ^ "}{" ^ tier ^ "}")
+        "\\dfrac{" ^ wrap acc ^ "}{" ^ wrap tier ^ "}")
   in
-  "\\dfrac{" ^ numerator ^ "}{" ^ conclusion_tex ^ "}"
+  "\\dfrac{" ^ wrap numerator ^ "}{" ^ wrap conclusion_tex ^ "}"
 
 let katex_cache : (string, string) Hashtbl.t = Hashtbl.create (module String)
 
@@ -255,13 +320,15 @@ let render_rule_html ~id (rule : rule) : string =
     List.fold (rule.conclusion :: rule.premise_tiers) ~init:0
       ~f:(fun acc s -> max acc (String.length s))
   in
-  let math = if max_line_len > 70 then "\\small " ^ math else math in
+  let is_wide = max_line_len > 70 in
+  let math = "\\small " ^ math in
   let math_html = katex_render math in
   let name_html = katex_render (Printf.sprintf "\\text{%s}" rule.name) in
+  let cls = if is_wide then "rule wide" else "rule" in
   Printf.sprintf
-    "<figure class=\"rule\" id=\"%s\"><span class=\"rule-name\">%s</span>\
+    "<figure class=\"%s\" id=\"%s\"><span class=\"rule-name\">%s</span>\
      <span class=\"rule-math\">%s</span></figure>"
-    id name_html math_html
+    cls id name_html math_html
 
 let chroma_style = "github"
 
@@ -642,10 +709,7 @@ pre, code { font-family: 'DejaVu Sans Mono', ui-monospace, monospace; font-size:
 pre code { font-size: 1em; }
 pre {
   padding: 0;
-  overflow-x: auto;
   background: transparent;
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
-          mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
 }
 pre.chroma.light { background: transparent; }
 a:link { color: #9c27b0; text-decoration: none; }
@@ -664,12 +728,26 @@ details.aside[open] summary::before { left: 0; top: 0.6em; border-top: 5px solid
 details.aside[open] summary { margin-bottom: 0.4em; }
 details.aside .aside-body { padding-left: 1em; margin: 0; }
 figure.rule { margin: 1.5em 0; display: flex; align-items: center; gap: 1.5em; padding: 0.5em 0; max-width: 100%; }
+@media (min-width: 769px) {
+  figure.rule.wide {
+    margin-left: calc(50% - 50vw + 1em);
+    margin-right: calc(50% - 50vw + 1em);
+    max-width: calc(100vw - 2em);
+    justify-content: center;
+  }
+  figure.rule.wide .rule-math {
+    flex: 0 1 auto;
+  }
+}
 figure.rule .rule-name { color: #334155; font-size: 0.9em; white-space: nowrap; flex-shrink: 0; }
 figure.rule .rule-math {
   font-size: 1.05em;
   flex: 1;
-  overflow-x: auto;
   min-width: 0;
+}
+figure.rule .rule-math.overflowing,
+pre.overflowing {
+  overflow-x: auto;
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
           mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
 }
@@ -716,6 +794,22 @@ let html_shell ~title ~body ~css ~katex_css ~js =
 <main>
 %s
 </main>
+<script>
+(function () {
+  var sel = 'figure.rule .rule-math, pre';
+  function update() {
+    document.querySelectorAll(sel).forEach(function (el) {
+      el.classList.toggle('overflowing', el.scrollWidth > el.clientWidth + 10);
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', update);
+  } else {
+    update();
+  }
+  window.addEventListener('resize', update);
+})();
+</script>
 <script>%s</script>
 </body>
 </html>
