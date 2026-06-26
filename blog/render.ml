@@ -137,6 +137,12 @@ let to_latex (s : string) : string =
               Buffer.add_string buf ("\\textit{" ^ escaped ^ "}")
         end;
         i := !j
+      end else if Char.equal c '{' then begin
+        Buffer.add_string buf "\\{";
+        Int.incr i
+      end else if Char.equal c '}' then begin
+        Buffer.add_string buf "\\}";
+        Int.incr i
       end else begin
         Buffer.add_char buf c;
         Int.incr i
@@ -246,6 +252,11 @@ let katex_render (tex : string) : string =
 let render_rule_html (rule : rule) : string =
   let id = "rule-" ^ rule.name in
   let math = build_dfrac rule in
+  let max_line_len =
+    List.fold (rule.conclusion :: rule.premise_tiers) ~init:0
+      ~f:(fun acc s -> max acc (String.length s))
+  in
+  let math = if max_line_len > 70 then "\\small " ^ math else math in
   let math_html = katex_render math in
   let name_html = katex_render (Printf.sprintf "\\text{%s}" rule.name) in
   Printf.sprintf
@@ -629,7 +640,13 @@ h1 { text-align: center; }
 h1, h2, h3, h4 { font-weight: 100; line-height: 1.2; }
 pre, code { font-family: 'DejaVu Sans Mono', ui-monospace, monospace; font-size: 0.9em; }
 pre code { font-size: 1em; }
-pre { padding: 0; overflow-x: auto; background: transparent; }
+pre {
+  padding: 0;
+  overflow-x: auto;
+  background: transparent;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+          mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+}
 pre.chroma.light { background: transparent; }
 a:link { color: #9c27b0; text-decoration: none; }
 a:visited { color: #610071; }
@@ -648,7 +665,14 @@ details.aside[open] summary { margin-bottom: 0.4em; }
 details.aside .aside-body { padding-left: 1em; margin: 0; }
 figure.rule { margin: 1.5em 0; display: flex; align-items: center; gap: 1.5em; padding: 0.5em 0; max-width: 100%; }
 figure.rule .rule-name { color: #334155; font-size: 0.9em; white-space: nowrap; flex-shrink: 0; }
-figure.rule .rule-math { font-size: 1.05em; flex: 1; overflow-x: auto; min-width: 0; }
+figure.rule .rule-math {
+  font-size: 1.05em;
+  flex: 1;
+  overflow-x: auto;
+  min-width: 0;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+          mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+}
 .heading-anchor:link, .heading-anchor:visited { color: inherit; text-decoration: none; }
 .heading-anchor:hover { color: inherit; text-decoration: underline; text-decoration-color: #94a3b8; text-underline-offset: 4px; }
 nav.toc { margin-bottom: 2em; line-height: 1.3; }

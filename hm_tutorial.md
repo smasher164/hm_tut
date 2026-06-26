@@ -231,7 +231,7 @@ To solve this system of equations, we can start by setting the two definitions o
 TyArrow(TyBool, ?3) = TyArrow(?0, ?1)
 ?0 = TyArrow(TyBool, ?1)
 ```
-Now let's substitute `TyArrow(TyBool, ?1)` for every occurence of `?0`.
+Now let's substitute `TyArrow(TyBool, ?1)` for every occurrence of `?0`.
 ```
 TyArrow(TyBool, ?3) = TyArrow(TyArrow(TyBool, ?1), ?1)
 ```
@@ -268,7 +268,7 @@ tv := Link(other_type)
 
 ### Try unification
 
-Here's a small tool for visualizing the process of unification. Enter a few constraints of the form `T1 = T2` (one per line), then click Step to watch each one break down and link metavars to their solutions.
+Here's a small tool for visualizing the process of unification. Enter a few constraints of the form `T1 = T2` (one per line), then click Step to watch each one break down and link type variables to their solutions.
 
 <!-- widget: unification-stepper -->
 
@@ -305,7 +305,7 @@ The `EBool` case is trivially known, since its type is `TyBool`.
 > ```
 > This basically says given `b` which is one of `true` or `false`, `b` is of type `Bool` under the typing context `Γ`.
 
-For `EVar`, there is some mention of a variable -- the `x` being passed as an argument to `foo` in `fun x -> foo x`, for example. We want to return the type of that variable. In order to do that, this variable must have already been declared somewhere before this occurence, like as the parameter to a lambda. Because of that, we know it should be in the environment. We just have to search our environment from the innermost scope to outermost for this variable, and grab its type. Let's write that function
+For `EVar`, there is some mention of a variable -- the `x` being passed as an argument to `foo` in `fun x -> foo x`, for example. We want to return the type of that variable. In order to do that, this variable must have already been declared somewhere before this occurrence, like as the parameter to a lambda. Because of that, we know it should be in the environment. We just have to search our environment from the innermost scope to outermost for this variable, and grab its type. Let's write that function
 
 ```ocaml
 (* Lookup a variable's type in the environment. *)
@@ -370,7 +370,7 @@ So ultimately, the `ELam` case looks like
     TELam (param, body, TyArrow ( ty_param, typ body ))
 ```
 
-I'll briefly mention that `typ` just takes a `texp` and return its `ty` field, since we'll sometimes need to grab the `ty` from the result of a recursive call to `infer`.
+I'll briefly mention that `typ` just takes a `texp` and returns its `ty` field, since we'll sometimes need to grab the `ty` from the result of a recursive call to `infer`.
 ```ocaml
 (* Get the type of a typed expression. *)
 let typ (texp : texp) : ty =
@@ -445,7 +445,7 @@ let rec unify (t1 : ty) (t2 : ty) : unit =
 ```
 
 So to start off, we accept two types that we're going to try to equate.
-We `force` them and then match on both. `force` just dereferences all the `Link`s in the a type variable.
+We `force` them and then match on both. `force` just dereferences all the `Link`s in a type variable.
 ```ocaml
 let rec force (ty : ty) : ty =
   match ty with
@@ -594,7 +594,7 @@ let typ (texp : texp) : ty =
   ...
   | TEIf (_, _, _, ty) -> ty
 ```
-In terms of type inference, we only need to add one case to `infer` to handle `EIF`, since we haven't added any new types.
+In terms of type inference, we only need to add one case to `infer` to handle `EIf`, since we haven't added any new types.
 First, we must ensure that the condition is of type `bool`, by calling `infer` on the condition and `unify`ing the resultant type with `TyBool`.
 Then, we must ensure that the then branch and else branch have the same types, by calling `infer` on both branches, and `unify`ing their types together.
 
@@ -667,7 +667,7 @@ Let's look at type inference for our `ELet` case.
 | ELet ((id, ann, rhs), body) ->
     ...
 ```
-First, we want to `infer` the type of the right-hand-side of the binding. if there is a type annotation, we want to check that the inferred type unifies with the annotation. This pattern of comparing an inferred type with a declared type will come up again and again in our type-checker. We can extract it out into a helper called `check`.
+First, we want to `infer` the type of the right-hand-side of the binding. If there is a type annotation, we want to check that the inferred type unifies with the annotation. This pattern of comparing an inferred type with a declared type will come up again and again in our type-checker. We can extract it out into a helper called `check`.
 
 ```ocaml
   let rec check env ty exp =
@@ -933,7 +933,7 @@ where `record_lit` is a list of (field name, expression) pairs
 ```ocaml
 and record_lit = (id * exp) list
 ```
-Correspondly, we update `texp` and define `tyrecord_lit`
+Correspondingly, we update `texp` and define `tyrecord_lit`
 ```ocaml
 type texp =
     ...
@@ -950,7 +950,7 @@ let lookup_tycon name (e : env) : tycon =
     | Some (TypeBind t) -> t
     | _ -> raise (undefined_error "type" name)
 ```
-Finally, in order to infer that a record literal constructs some predeclared type, we need that secret sauce I mentioned earlier. Remember how unification used type variables in place of types we hadn't figured out yet? We want to use thoses type variables for records as well, but we also want to say "we haven't figured out the type of this record yet, but we know it should have *these* fields". To do this, we are going to stash a constraint inside our `Unbound` type variable called a `row_constraint`.
+Finally, in order to infer that a record literal constructs some predeclared type, we need that secret sauce I mentioned earlier. Remember how unification used type variables in place of types we hadn't figured out yet? We want to use those type variables for records as well, but we also want to say "we haven't figured out the type of this record yet, but we know it should have *these* fields". To do this, we are going to stash a constraint inside our `Unbound` type variable called a `row_constraint`.
 
 Basically, a *row* is a set of (label, type) pairs, a.k.a a set of field names and their types (they can also correspond to variant names and their types, but we will not be covering those in this post). If you recall, `record_ty` is exactly the structure we want to represent such a set. Our constraints, then, are how we indicate that a type variable should have *at least* certain fields or *exactly* certain fields.
 ```ocaml
@@ -1060,7 +1060,7 @@ We can then return the `TEWith` up with the typed record, fields, and unified ty
     unify env (typ rcd) row;
     TEWith (rcd, rec_lit, typ rcd)
 ```
-The last expression we need to infer the type of is `EProj`, which involves accessing a field from a record. We follow a similar approach here. Given an `EProj(rcd, fld)`, we synthesize an `Unbound` type variable with an `OpenRow` constraint containing `fld` and its type, unifiying the type variable with the type of `rcd`.
+The last expression we need to infer the type of is `EProj`, which involves accessing a field from a record. We follow a similar approach here. Given an `EProj(rcd, fld)`, we synthesize an `Unbound` type variable with an `OpenRow` constraint containing `fld` and its type, unifying the type variable with the type of `rcd`.
 ```ocaml
 | EProj (rcd, fld) ->
     let rcd = infer env rcd in
@@ -1238,9 +1238,9 @@ But when we look at `f`, nothing about its definition requires it to be restrict
 
 We'd like `f`'s type to be something like `forall 'a. 'a -> 'a`. But hang on, how would we even use a type like that? We can't exactly unify `'a` with `A`. We need to treat `'a` as a placeholder (or type parameter) that gets substituted with a concrete type argument. This process of taking a generic type and replacing its type parameters with concrete types is called *instantiation*. When `f` gets applied to an `A` or `B`, we look up its type (which will now be generic), and instantiate it to have its type parameters substituted with fresh type variables.
 
-So for example, when `f` is applied to an `A`, `forall 'a. 'a -> 'a` gets instantiated to get `?0 -> '0`. Then `A -> ?1` gets unified with `?0 -> ?0` as normal, resulting in `A -> A` as the type of the *concrete* instance of `f`.
+So for example, when `f` is applied to an `A`, `forall 'a. 'a -> 'a` gets instantiated to get `?0 -> ?0`. Then `A -> ?1` gets unified with `?0 -> ?0` as normal, resulting in `A -> A` as the type of the *concrete* instance of `f`.
 
-Likewise, when `f` is applied to a `B`, `forall 'a. 'a -> 'a` gets instantiated to get `?2 -> '2`, and the same process will result in its concrete type becoming `B -> B`.
+Likewise, when `f` is applied to a `B`, `forall 'a. 'a -> 'a` gets instantiated to get `?2 -> ?2`, and the same process will result in its concrete type becoming `B -> B`.
 
 To get generic instantiation working, we first want to introduce `generic_ty` that contains a type as well as a list of type parameters.
 ```ocaml
@@ -1318,7 +1318,7 @@ the instantiated type is something like
 ```ocaml
 let a = TyVar(ref(Unbound("?0", NoRow))) in
 let b = TyVar(ref(Unbound("?1", NoRow))) in
-TyArrow(a), TyArrow(b, a))
+TyArrow(a, TyArrow(b, a))
 ```
 (Note: I bound the `TyVar`s to variables here to show that the references would be the same.)
 
@@ -1351,7 +1351,7 @@ let f : forall 'a. 'a -> 'a = fun x ->
     let y : 'a = x in y
 in f true
 ```
-Notice how the annotation on the `f` introduces `'a` with a `forall`. `'a` is a type variable that can range over any type, so it can be instantiated with for example, `int`, `bool`, `string`, etc... On the right-hand-side of the let binding, we see a function whose body has another let binding, this time with an annotation mentioning the same `'a`. Basically, if `f` gets instantiated with an `int`, the instantiation's type would be `int -> int`, and the inner let binding's type would be `int`. We can say that the `'a` introduced by `forall 'a` on `f`'s annotation is scoped to the right-hand-side of `f`'s binding.
+Notice how the annotation on `f` introduces `'a` with a `forall`. `'a` is a type variable that can range over any type, so it can be instantiated with for example, `int`, `bool`, `string`, etc... On the right-hand-side of the let binding, we see a function whose body has another let binding, this time with an annotation mentioning the same `'a`. Basically, if `f` gets instantiated with an `int`, the instantiation's type would be `int -> int`, and the inner let binding's type would be `int`. We can say that the `'a` introduced by `forall 'a` on `f`'s annotation is scoped to the right-hand-side of `f`'s binding.
 
 Another factor we should consider when we have type variables inside annotations is rigidity. What would happen if we tried to instantiate a generic annotation? Let's try to type-check the following program and see what happens:
 ```
@@ -1369,7 +1369,7 @@ unify TyArrow(?0, ?0) TyArrow(?a, ?b)
             unify ?a ?b
                 ?a := Link(?b)
 ```
-We just unified `?a` with `?b` and type-checking did passed, which is *not* what we want. So how do we fix this?
+We just unified `?a` with `?b` and type-checking passed, which is *not* what we want. So how do we fix this?
 
 Well imagine that instead of working with `Unbound` type variables for `?a` and `?b`, we were working with `TyName "a"` and `TyName "b"`. Two `TyName`s with different names are inherently unequal and do not unify. That's the key. We treat type variables as `TyName`s on their own.
 
@@ -1423,7 +1423,7 @@ match ann with
     check (extras @ env) check_ty rhs
 | None -> infer env rhs
 ```
-In the case where there is a generic annotation, we extend the environment with its type parameters (`extras`), and type-check the right-hand-side. The annotation puts us back in checking mode, and the rigid type variables introduced by `as_rigid` mean the check enforces the polymorphic annotation rather than trying to falling back to inference.
+In the case where there is a generic annotation, we extend the environment with its type parameters (`extras`), and type-check the right-hand-side. The annotation puts us back in checking mode, and the rigid type variables introduced by `as_rigid` mean the check enforces the polymorphic annotation rather than falling back to inference.
 
 Now what if we want to have a generic function that doesn't need a type annotation? This is where generalization comes in.
 
@@ -1445,7 +1445,7 @@ generalization could turn it into something like
 ```
 I say *could* turn into and not *will* turn into, because there is one crucial piece of information that plays a role in whether a type variable gets generalized--its scope.
 
-The rule is that in a type variable on the right-hand-side of a let binding is only generalized if it was created in the right-hand-side of that let binding. So in other words, for an expression like
+The rule is that a type variable on the right-hand-side of a let binding is only generalized if it was created in the right-hand-side of that let binding. So in other words, for an expression like
 ```
 let x = RHS
 in BODY
@@ -1954,7 +1954,7 @@ The problem is what happens at generalization. When `f` is normally generalized,
 
 Here's the syntax for that:
 ```
-forall 'a 'b. 'a :: { x : 'b, ... } => 'a -> 'b`
+forall 'a 'b. 'a :: { x : 'b, ... } => 'a -> 'b
 ```
 The piece between `::` and `=>` is a row constraint, and it corresponds directly to the `OpenRow` the expression-level inference produced for `r`. So row polymorphism is really about carrying that constraint through `gen`, `inst`, and `unify`. The expression-level inference doesn't have to change at all.
 
@@ -2269,7 +2269,7 @@ let apply_tyapp env (ty : ty) : record_ty =
     match force ty with
     ...
 ```
-If it's a `TyName`, there's nothing to apply. We just look the binding up in the environment, expecting a `TypeBind` holding a type constructor. Before we return its underling record fields, we validate that the type constructor's argument list is empty, since we don't want someone to be referring to a type like `Box` in an annotation without fully applying it.
+If it's a `TyName`, there's nothing to apply. We just look the binding up in the environment, expecting a `TypeBind` holding a type constructor. Before we return its underlying record fields, we validate that the type constructor's argument list is empty, since we don't want someone to be referring to a type like `Box` in an annotation without fully applying it.
 ```ocaml
 | TyName name ->
   (match lookup_binding name env with
@@ -2440,7 +2440,7 @@ Well our intuition is mostly correct, but turns out we need to ensure that expre
 
 This is called the *syntactic* value restriction. It is the criterion Standard ML uses to handle mutability. We are basically ensuring that we only generalize *values*, but take a conservative approach and define value as any constant, variable, lambda, or record literal whose elements are all values.
 
-There are other approaches here, including OCaml's that does a deeper syntactic check to allow nested let bindings, record projection, some lambda applications, etc... Other approaches incude changing our evaluation model from eager to lazy, analyzing the bodies of functions being applied to see if there are observable side effects, using an effect system to track effects of expressions, etc... That last one (which Koka employs) is kind of the ultimate solution to the problem, because we get precise tracking at the type-level for expressions that don't perform side effects and can be generalized. However, discussing effect systems is outside the scope of this article, and restricting generalization to syntactic values turns out to not be a problem in practice.
+There are other approaches here, including OCaml's that does a deeper syntactic check to allow nested let bindings, record projection, some lambda applications, etc... Other approaches include changing our evaluation model from eager to lazy, analyzing the bodies of functions being applied to see if there are observable side effects, using an effect system to track effects of expressions, etc... That last one (which Koka employs) is kind of the ultimate solution to the problem, because we get precise tracking at the type-level for expressions that don't perform side effects and can be generalized. However, discussing effect systems is outside the scope of this article, and restricting generalization to syntactic values turns out to not be a problem in practice.
 
 > Aside: Stephen Dolan recently took a different approach in [Rethinking the Value Restriction](https://www.youtube.com/watch?v=C1g_PO_xcI8) that supports full rank-1 types in ML, restricts generalization to lambda abstractions, and lazily instantiates foralls only when forced to by application or projection. There is some nuance around covariance annotations and curried functions, but consider taking a look at this talk!
 
