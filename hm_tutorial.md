@@ -454,7 +454,7 @@ let rec force (ty : ty) : ty =
 ```
 Now, we know that if we match on a type variable, that it's definitely `Unbound`, and won't have to do any dereferencing inside the body of `unify`.
 
-Let's take `unify` case-by-case. First, we just try checking if the two types are equal, according to ocaml's definition of equality. Note: we could've explicitly written out this case as `TyBool, TyBool -> ()`, but structural equality handles this for us.
+Let's take `unify` case-by-case. First, we just try checking if the two types are equal, according to OCaml's definition of equality. Note: we could've explicitly written out this case as `TyBool, TyBool -> ()`, but structural equality handles this for us.
 ```ocaml
 | _ when equal t1 t2 ->
     () (* The types are trivially equal (e.g. TyBool). *)
@@ -498,7 +498,7 @@ can always be compared by its name `tree`.
 
 However, with the recursive types we're talking about disallowing, the `tree` type is an infinite structure that needs to be compared while memoizing cycles.
 
-> Aside: One can think of cyclic types like these as recursive type aliases or anonymous recursive types. The formal name for these is *equirecursive types*, and they exist in some languages like ocaml with the `-rectypes` flag, and MLScript, which implements algebraic subtyping. A tree type would be expressed as `μT. Leaf | Branch(int, T, T)`. Notice how the recursion is extracted out as the parameter `T`. `μ` is basically a fixed-point combinator for types. When unifying a type variable with another type, we can normalize both types into this `μ` constructor, and then compare them. With nominal types and pattern matching, we explicitly fold and unfold types. This is what's called an *iso-recursive type*.
+> Aside: One can think of cyclic types like these as recursive type aliases or anonymous recursive types. The formal name for these is *equirecursive types*, and they exist in some languages like OCaml with the `-rectypes` flag, and MLScript, which implements algebraic subtyping. A tree type would be expressed as `μT. Leaf | Branch(int, T, T)`. Notice how the recursion is extracted out as the parameter `T`. `μ` is basically a fixed-point combinator for types. When unifying a type variable with another type, we can normalize both types into this `μ` constructor, and then compare them. With nominal types and pattern matching, we explicitly fold and unfold types. This is what's called an *iso-recursive type*.
 
 This process of checking for a cycle before binding a type variable is called an *occurs* check, since we are checking that a type variable does not *occur* in the type we are binding to.
 
@@ -1095,7 +1095,14 @@ Next we handle the case where `ty` is a type variable that is distinct from `tv`
 | TyVar other when not (phys_equal tv other) ->
     let Unbound(id, other_row) = !other in
 ```
-We will union `tv_row` with `other_row`. First, we should make sure `tv` isn't mentioned inside the fields' types inside `other_row`.
+We will union `tv_row` with `other_row`. Let's define a helper `row_iter` that walks the fields in a `row_constraint`.
+```ocaml
+let row_iter (row : row_constraint) f =
+  match row with
+  | NoRow -> ()
+  | OpenRow flds | ClosedRow flds -> List.iter flds ~f
+```
+First, we should make sure `tv` isn't mentioned inside the fields' types inside `other_row`.
 ```ocaml
 row_iter other_row (fun (_, ty) -> occurs tv ty);
 ```
@@ -1429,7 +1436,7 @@ Now what if we want to have a generic function that doesn't need a type annotati
 
 ## Generalization
 
-Now that we've covered instantiation of generic types and checking generic annotations, it's time to get to the meat of Hindley Milner--generalization. Simply put, generalization takes a type that's not generic and makes it generic by turning its unbound type variables into type parameters.
+Now that we've covered instantiation of generic types and checking generic annotations, it's time to get to the meat of Hindley-Milner--generalization. Simply put, generalization takes a type that's not generic and makes it generic by turning its unbound type variables into type parameters.
 
 So given a type like
 ```ocaml
@@ -1641,7 +1648,7 @@ let gen (ty: ty) : generic_ty =
 ```
 We want to walk over the type to find all of its type variables, and grab the `id`s of the ones whose scope is greater than the `current_scope`. We keep track of those ids in a `Hash_set` called `type_params`. Those will be the type parameters in our generalized type.
 
-We create a helper (`gen'`) to recur down the type and return the generalized type. The first case is the only interesting one (the rest are just recurring over the `ty`). If the `scope` of the `Unbound` type variable is greater than `current_scope`, we add the type variable's `id` to the `type_params` hash set and return up a `TyName` with that `id` to reference that type parameter. (Remember when `inst`antiation comes around, it will look for `TyName`s that correspond to those type parameters.) We also mutate the tvar to `Link` to the generalized `TyName`, so the later post-pass walking the typed AST doesn't see it as still-Unbound.
+We create a helper (`gen'`) to recur down the type and return the generalized type. The first case is the only interesting one (the rest are just recurring over the `ty`). If the `scope` of the `Unbound` type variable is greater than `current_scope`, we add the type variable's `id` to the `type_params` hash set and return up a `TyName` with that `id` to reference that type parameter. (Remember when `inst`antiation comes around, it will look for `TyName`s that correspond to those type parameters.) We also mutate the tvar to `Link` to the generalized `TyName`, so any later code that walks the typed AST doesn't see it as still Unbound.
 ```ocaml
 let rec gen' ty =
     match force ty with
@@ -1753,7 +1760,7 @@ Here's a tool to visualize the process of let generalization. Pick the naive rul
 
 <!-- widget: let-generalization-scope -->
 
-The `ELetRec` case is slightly more complicated. To type-check recursive let bindings, we want to *delay* generalization until after each let binding is inferred. This means that mutually recursive bindings will not be referencing generic versions of each other. Why is this? Turns out, that referencing generic versions of each other while fully inferring their types is undecidable.
+The `ELetRec` case is slightly more complicated. To type-check recursive let bindings, we want to *delay* generalization until after each let binding is inferred. This means that mutually recursive bindings will not be referencing generic versions of each other. Why is this? Turns out that referencing generic versions of each other while fully inferring their types is undecidable.
 
 Here is an example of polymorphic recursion from the [ocaml docs](https://v2.ocaml.org/manual/polymorphism.html#s%3Apolymorphic-recursion).
 ```ocaml
@@ -1766,7 +1773,7 @@ let rec depth = function
     | Nested n -> 1 + depth n
 ```
 
-Looks like a fairly simple function, but the issue here is that the inner call to `depth n` ends up trying to unify `'a nested` with `'a list nested`, which is not satisfiable. The type checker doesn't realize that the `'a nested` depth was initially called on is different from the `'a list nested` that's the element type. This can be solved by providing an explicit annotation to `depth`, like `forall 'a. 'a nested -> int`. However, there are other issues related to polymorphic recursion in that it can't be monomorphized, and leads to inefficient implementation. In practice, not having polymorphic recursion is not an issue. Most of the recursive functions you'll ever want to define can be written and inferred in this setting.
+Looks like a fairly simple function, but the issue here is that the inner call to `depth n` ends up trying to unify `'a nested` with `'a list nested`, which is not satisfiable. The type-checker doesn't realize that the `'a nested` `depth` was initially called on is different from the `'a list nested` that's the element type. This can be solved by providing an explicit annotation to `depth`, like `forall 'a. 'a nested -> int`. However, there are other issues related to polymorphic recursion in that it can't be monomorphized, and leads to inefficient implementation. In practice, not having polymorphic recursion is not an issue. Most of the recursive functions you'll ever want to define can be written and inferred in this setting.
 
 > Aside: The undecidability of type inference for polymorphic recursion was shown by Fritz Henglein in the paper "Type Inference with Polymorphic Recursion". They show that semi-unification reduces to type inference for polymorphic recursion, which implies it's undecidable.
 
@@ -1931,9 +1938,9 @@ typecheck_source "(fun x -> let y = x in y) true true"
 ```
 Output: `UnificationFailure "failed to unify type bool with bool -> ?2"`
 
-## Row Polymorphism
+## Row polymorphism
 
-Currently, we are able to infer the types of expressions involving records, as long as they ultimately unify to some concrete type. However, one of the beautiful things about let generalization in Hindley Milner is that we can define a function without a type signature that can operate on values of different types. What if we could apply that polymorphism to records?
+Currently, we are able to infer the types of expressions involving records, as long as they ultimately unify to some concrete type. However, one of the beautiful things about let generalization in Hindley-Milner is that we can define a function without a type signature that can operate on values of different types. What if we could apply that polymorphism to records?
 
 For example, given the records
 ```
@@ -2186,7 +2193,7 @@ That's row polymorphism! We can write functions that are polymorphic over the re
 
 ## Generic type declarations
 
-You'll notice in our examples above, the type declarations are not generic. However, in languages like Java or ML, you have access to types like `List` that are instantiated with some type argument. Similarly to row polymorphism, we won't need to change anything about our expression-level inference. All of the work happens at the level of gen, inst, unify, and occurs. The first thing we'll want to do is modify our definition of `tycon` to contain type parameters.
+You'll notice in our examples above, the type declarations are not generic. However, in languages like Java or ML, you have access to types like `List` that are instantiated with some type argument. Similarly to row polymorphism, we won't need to change anything about our expression-level inference. All of the work happens at the level of `gen`, `inst`, `unify`, and `occurs`. The first thing we'll want to do is modify our definition of `tycon` to contain type parameters.
 ```ocaml
 type tycon = {
     name : id;
@@ -2408,9 +2415,9 @@ typecheck_source {|
 ```
 Output: `RowMismatch "{x: bool} and {x: bool, y: bool}"`
 
-## Side-effects
+## Side effects
 
-Up until now, this language has been pure. You would think adding features like mutability and other side-effects would not be a problem for a polymorphic type system like ours. However, there are gotchas. Let's say we added mutability to our language with a `Ref 'a` type. For example, `Ref int` corresponds to a memory location containing an `int` value. A `Ref 'a` can be built with a `ref` function, whose type is `forall 'a. 'a -> Ref 'a`. You can retrieve the value at a `Ref 'a` via `deref`, whose type is `forall 'a. Ref 'a -> 'a`. A shorthand operator for this is `*r`, where `r` is the name of the reference. Finally, you can update the value at an existing memory location via `update`, whose type is `forall 'a. Ref 'a -> 'a -> Unit` (`Unit` is just an empty record type). A shorthand syntax for this operation is `*r = v`, where `r` is the name of the reference and `v` is the value being stored.
+Up until now, this language has been pure. You would think adding features like mutability and other side effects would not be a problem for a polymorphic type system like ours. However, there are gotchas. Let's say we added mutability to our language with a `Ref 'a` type. For example, `Ref int` corresponds to a memory location containing an `int` value. A `Ref 'a` can be built with a `ref` function, whose type is `forall 'a. 'a -> Ref 'a`. You can retrieve the value at a `Ref 'a` via `deref`, whose type is `forall 'a. Ref 'a -> 'a`. A shorthand operator for this is `*r`, where `r` is the name of the reference. Finally, you can update the value at an existing memory location via `update`, whose type is `forall 'a. Ref 'a -> 'a -> Unit` (`Unit` is just an empty record type). A shorthand syntax for this operation is `*r = v`, where `r` is the name of the reference and `v` is the value being stored.
 
 So for example,
 ```
@@ -2544,4 +2551,4 @@ Output: `Unit`
 
 ## Conclusion
 
-The features covered in this article already give you a very sound and flexible system to program in, with generics, row polymorphism, side effects, and annotation-less type-safety. As mentioned, see the companion repository https://github.com/smasher164/hm_tut for the source corresponding to each section. In the next post, we'll cover how to implement typeclasses/traits and their various extensions.
+The features covered in this article already give you a very sound and flexible system to program in, with generics, row polymorphism, side effects, and annotation-less type safety. As mentioned, see the companion repository https://github.com/smasher164/hm_tut for the source corresponding to each section. In the next post, we'll cover how to implement typeclasses/traits and their various extensions.
