@@ -51,7 +51,7 @@ So for example, in
 let id = fun x -> x
 in id true
 ```
-the variable named `id` will be given the type `forall 'a. 'a -> 'a`. For folks more familiar with languages like Java, it'd be like if we declared `id` as
+the variable named `id` will be given the type `forall 'a. 'a -> 'a`. For folks more familiar with imperative languages with generics, it'd be like if we declared `id` as
 ```
 T id<T>(T x) {
     return x;
