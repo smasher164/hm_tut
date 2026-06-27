@@ -1646,20 +1646,22 @@ To fully ensure that the scope of a type variable gets updated to be the outermo
 ```
 The change is just pulling out `other_scope`, taking the minimum with `src_scope`, and stamping it on the updated `other`.
 
-Now let's actually look into how generalization is implemented. `gen` will be a function that accepts a `ty` and returns a `generic_ty`.
+Now let's actually look into how generalization is implemented. `gen` will be a function that accepts a `ty` and a `to_link` list ref, and returns a `generic_ty`. We'll explain `to_link`'s role shortly.
 ```ocaml
-let gen (ty: ty) : generic_ty =
+let gen ~to_link (ty: ty) : generic_ty =
     let type_params = Hash_set.create (module String) in
 ```
 We want to walk over the type to find all of its type variables, and grab the `id`s of the ones whose scope is greater than the `current_scope`. We keep track of those ids in a `Hash_set` called `type_params`. Those will be the type parameters in our generalized type.
 
-We create a helper (`gen'`) to recur down the type and return the generalized type. The first case is the only interesting one (the rest are just recurring over the `ty`). If the `scope` of the `Unbound` type variable is greater than `current_scope`, we add the type variable's `id` to the `type_params` hash set and return up a `TyName` with that `id` to reference that type parameter. (Remember when `inst`antiation comes around, it will look for `TyName`s that correspond to those type parameters.) We also mutate the tvar to `Link` to the generalized `TyName`, so any later code that walks the typed AST doesn't see it as still Unbound.
+We create a helper (`gen'`) to recur down the type and return the generalized type. The first case is the only interesting one (the rest are just recurring over the `ty`). If the `scope` of the `Unbound` type variable is greater than `current_scope`, we add the type variable's `id` to the `type_params` hash set and return up a `TyName` with that `id` to reference that type parameter. (Remember when `inst`antiation comes around, it will look for `TyName`s that correspond to those type parameters.)
+
+We also need to eventually mutate the tvar to `Link` to the generalized `TyName`, so any later code that walks the typed AST doesn't see it as still Unbound. We don't do that mutation inside `gen`, though. Instead, `gen` appends the tvar to a `to_link` list ref passed in by the caller. A separate `link_all` helper iterates over the list and performs the actual linking. The reason for this split will become more apparent with `ELetRec`, where we delay generalization until after a group of bindings is checked.
 ```ocaml
 let rec gen' ty =
     match force ty with
     | TyVar ({ contents = Unbound (id, _, scope) } as tv) when scope > !current_scope ->
         Hash_set.add type_params id;
-        tv := Link (TyName id);
+        to_link := tv :: !to_link;
         TyName id
     | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
     | ty -> ty
@@ -1672,15 +1674,15 @@ let ty = gen' ty in
 let type_params = Hash_set.to_list type_params |> List.sort ~compare in
 { type_params; ty }
 ```
-Overall, our `gen` implementation looks as follows:
+Overall, our `gen` and `link_all` implementations look as follows:
 ```ocaml
-let gen (ty: ty) : generic_ty =
+let gen ~to_link (ty: ty) : generic_ty =
     let type_params = Hash_set.create (module String) in
     let rec gen' ty =
         match force ty with
         | TyVar ({ contents = Unbound (id, _, scope) } as tv) when scope > !current_scope ->
             Hash_set.add type_params id;
-            tv := Link (TyName id);
+            to_link := tv :: !to_link;
             TyName id
         | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
         | ty -> ty
@@ -1688,7 +1690,14 @@ let gen (ty: ty) : generic_ty =
     let ty = gen' ty in
     let type_params = Hash_set.to_list type_params |> List.sort ~compare in
     { type_params; ty }
+
+let link_all to_link =
+    List.iter !to_link ~f:(fun tv ->
+        match !tv with
+        | Unbound (id, _, _) -> tv := Link (TyName id)
+        | Link _ -> ())
 ```
+A tvar can show up in `to_link` multiple times if it was in multiple types that were generalized. We handle duplicates by matching on the tvar and only binding it if it's Unbound.
 
 Since we've finished writing the generalization procedure, let's update our type inference logic in `infer`. Most of our cases will actually not be affected. Just our `ELam`, `ELet`, and `ELetRec` cases.
 
@@ -1725,13 +1734,15 @@ Next, our `ELet` case will be the first interesting one. As mentioned before, we
     leave_scope();
     ...
 ```
-On top of this change, we want to generalize the type of the right-hand-side when there's no annotation. If there is an annotation, we already have the polymorphic type we want, so we use the annotation directly.
+On top of this change, we want to generalize the type of the right-hand-side when there's no annotation. If there is an annotation, we already have the polymorphic type we want, so we use the annotation directly. We'll pass into `gen` a freshly allocated list ref `to_link`, onto which it appends type variables, and then link them afterwards with `link_all`.
 ```ocaml
+let to_link = ref [] in
 let ty_gen =
     match ann with
     | Some ann -> ann
-    | None -> gen (typ rhs)
+    | None -> gen ~to_link (typ rhs)
 in
+link_all to_link;
 ```
 That's the type we add to the environment for the binding.
 ```ocaml
@@ -1749,11 +1760,13 @@ And the rest is kept as usual. Overall, the `ELet` case should look like
         | None -> infer env rhs
     in
     leave_scope();
+    let to_link = ref [] in
     let ty_gen =
-    match ann with
-    | Some ann -> ann
-    | None -> gen (typ rhs)
-in
+        match ann with
+        | Some ann -> ann
+        | None -> gen ~to_link (typ rhs)
+    in
+    link_all to_link;
     let env = (id, VarBind ty_gen) :: env in
     let body = infer env body in
     TELet ((id, ann, rhs), body, typ body)
@@ -1810,16 +1823,18 @@ let tdecls : tlet_decl list = List.map prepared ~f:(fun (id, ann, rhs, extras, c
 in
 leave_scope();
 ```
-Now we generalize the types of all the bindings. As with `ELet`, if there's an annotation we use it directly, otherwise we call `gen` on the inferred type.
+Now we generalize the types of all the bindings. As with `ELet`, if there's an annotation we use it directly, otherwise we call `gen` on the inferred type. The difference from `ELet` is we delay linking type variables to their `TyName`s until after all the bindings have been generalized. This is because mutually recursive bindings can share type variables, so linking one during a call to `gen` would turn it into a `TyName` too early, preventing a subsequent binding from generalizing it.
 ```ocaml
+let to_link = ref [] in
 let generalized_bindings = List.map tdecls ~f:(fun (id, ann, rhs) ->
     let ty_gen =
         match ann with
         | Some ann -> ann
-        | None -> gen (typ rhs)
+        | None -> gen ~to_link (typ rhs)
     in
     (id, VarBind ty_gen))
 in
+link_all to_link;
 ```
 Finally, we add it to the original `env` so we can use it to infer the body of the recursive let binding.
 ```ocaml
@@ -1849,14 +1864,16 @@ Overall, our updated implementation of `ELetRec` looks like
         (id, ann, trhs))
     in
     leave_scope();
+    let to_link = ref [] in
     let generalized_bindings = List.map tdecls ~f:(fun (id, ann, rhs) ->
         let ty_gen =
             match ann with
             | Some ann -> ann
-            | None -> gen (typ rhs)
+            | None -> gen ~to_link (typ rhs)
         in
         (id, VarBind ty_gen))
     in
+    link_all to_link;
     let env_body = generalized_bindings @ env in
     let body = infer env_body body in
     TELetRec (tdecls, body, typ body)
@@ -2008,13 +2025,13 @@ We also change `type_params` from a `Hash_set` to a `Hashtbl` so we can map a ty
 
 Overall, our `gen` implementation looks like
 ```ocaml
-let gen (ty: ty) : generic_ty =
+let gen ~to_link (ty: ty) : generic_ty =
     let type_params : (id, row_constraint) Hashtbl.t = Hashtbl.create (module String) in
     let rec gen' ty =
         match force ty with
         | TyVar ({ contents = Unbound (id, row, scope) } as tv) when scope > !current_scope ->
             Hashtbl.set type_params ~key:id ~data:(map_row ~f:gen' row);
-            tv := Link (TyName id);
+            to_link := tv :: !to_link;
             TyName id
         | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
         | ty -> ty
@@ -2467,24 +2484,24 @@ let rec is_value (x: texp) : bool =
 ```
 The only interesting case is `TERecord`, where we check that all of its fields are also values.
 
-Next, let's write `generalize_if_value`, a helper that wraps `gen` so we only generalize when the `rhs` is a value. Otherwise, we fall back to `dont_generalize`.
+Next, let's write `generalize_if_value`, a helper that wraps `gen` so we only generalize when the `rhs` is a value. Otherwise, we fall back to `dont_generalize`. It threads through the `to_link` ref to `gen`.
 
 ```ocaml
-let generalize_if_value rhs : generic_ty =
-    if is_value rhs then gen (typ rhs)
+let generalize_if_value ~to_link rhs : generic_ty =
+    if is_value rhs then gen ~to_link (typ rhs)
     else dont_generalize (typ rhs)
 ```
 
-Now in our `ELet` case, the `None` branch where we previously called `gen (typ rhs)` becomes:
+Now in our `ELet` case, the `None` branch where we previously called `gen ~to_link (typ rhs)` becomes:
 
 ```ocaml
-| None -> generalize_if_value rhs
+| None -> generalize_if_value ~to_link rhs
 ```
 
-The `ELetRec` case gets the same treatment in the `List.map` that produces `generalized_bindings`. The `None` branch where we previously called `gen (typ rhs)` becomes:
+The `ELetRec` case gets the same treatment in the `List.map` that produces `generalized_bindings`. The `None` branch where we previously called `gen ~to_link (typ rhs)` becomes:
 
 ```ocaml
-| None -> generalize_if_value rhs
+| None -> generalize_if_value ~to_link rhs
 ```
 
 Putting this all together, we have implemented the value restriction. If we added `ref`, `deref`, and `update` built-ins, our language would correctly handle mutability.
