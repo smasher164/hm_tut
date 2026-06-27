@@ -359,15 +359,15 @@ module Nine() = struct
     trivial generic type (no quantified parameters). *)
   let dont_generalize ty : generic_ty = { type_params = []; ty }
 
-  let gen (ty: ty) : generic_ty =
+  let gen ~to_link (ty: ty) : generic_ty =
     let type_params : (id, row_constraint) Hashtbl.t = Hashtbl.create (module String) in
     let rec gen' ty =
       match force ty with
       | TyVar ({ contents = Unbound (id, row, scope) } as tv) when scope > !current_scope ->
         Hashtbl.set type_params ~key:id ~data:(map_row ~f:gen' row);
-        (* Mutate the tvar to Link to its generalized TyName, so the
-          post-pass walking the AST doesn't see it as Unbound. *)
-        tv := Link (TyName id);
+        (* Record the tvar so the caller can Link it to its generalized
+          TyName after all related bindings have been generalized. *)
+        to_link := tv :: !to_link;
         TyName id
       | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
       | TyApp app -> TyApp (List.map app ~f:gen')
@@ -379,6 +379,16 @@ module Nine() = struct
       |> List.sort ~compare:(fun (a,_) (b,_) -> String.compare a b)
     in
     { type_params; ty }
+
+  (* Mutate each recorded tvar to Link to its generalized TyName, so the
+    post-pass walking the AST doesn't see it as Unbound. A tvar may show
+    up multiple times in to_link if the same metavar appeared in more than
+    one walked type; the second visit finds it already Linked. *)
+  let link_all to_link =
+    List.iter !to_link ~f:(fun tv ->
+      match !tv with
+      | Unbound (id, _, _) -> tv := Link (TyName id)
+      | Link _ -> ())
 
   (* Instantiate a generic type by replacing all the type parameters
    with fresh unbound type variables. Ensure that the same ID gets
@@ -403,8 +413,8 @@ module Nine() = struct
     let extras = List.map gty.type_params ~f:(fun (id, row) -> (id, TypeVarBind row)) in
     (extras, gty.ty)
 
-  let generalize_if_value rhs : generic_ty =
-    if is_value rhs then gen (typ rhs)
+  let generalize_if_value ~to_link rhs : generic_ty =
+    if is_value rhs then gen ~to_link (typ rhs)
     else dont_generalize (typ rhs)
 
   let rec check env ty exp =
@@ -484,12 +494,14 @@ module Nine() = struct
         | None -> infer env rhs
       in
       leave_scope();
+      let to_link = ref [] in
       (* Value restriction: only generalize if the RHS is a value. *)
       let ty_gen =
         match ann with
         | Some ann -> ann
-        | None -> generalize_if_value rhs
+        | None -> generalize_if_value ~to_link rhs
       in
+      link_all to_link;
       let env_body = (id, VarBind ty_gen) :: env in
       let body = infer env_body body in
       TELet ((id, ann, rhs), body, typ body)
@@ -512,14 +524,18 @@ module Nine() = struct
         (id, ann, trhs))
       in
       leave_scope();
+      let to_link = ref [] in
       let generalized_bindings = List.map tdecls ~f:(fun (id, ann, rhs) ->
         let ty_gen =
           match ann with
           | Some ann -> ann
-          | None -> generalize_if_value rhs
+          | None -> generalize_if_value ~to_link rhs
         in
         (id, VarBind ty_gen))
       in
+      (* Link tvars only after all bindings have been generalized, otherwise
+        the TyName would be hidden when trying to generalize the next binding. *)
+      link_all to_link;
       let env_body = generalized_bindings @ env in
       let body = infer env_body body in
       TELetRec (tdecls, body, typ body)
@@ -751,6 +767,14 @@ let%test "let_rec_typevar_ref" =
   expect_type "bool" {|
     let rec f : forall 'a. 'a -> 'a = fun x -> let y : 'a = x in y in
     f true
+  |}
+
+let%test "let_rec_polymorphic_mutual" =
+  let open Nine() in
+  expect_type "bool" {|
+    let rec f = fun x -> g x
+    and g = fun y -> f y in
+    if g true then true else false
   |}
 
 let%test "let_rigid_ok" =
