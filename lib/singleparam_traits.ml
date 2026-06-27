@@ -42,6 +42,8 @@ module Singleparam_traits() = struct
     predicates : pred list;
     ty : ty;
   }
+  (* An instance declaration declares that a type satisfies a trait. *)
+  type instance_decl = { trait : id; arg : ty }
   type bind =
     | VarBind of generic_ty (* A variable binding maps to a generic type. *)
     | TypeBind of tycon (* A type binding maps to a type constructor. *)
@@ -202,6 +204,9 @@ module Singleparam_traits() = struct
   let current_scope = ref 1
   let enter_scope () = Int.incr current_scope
   let leave_scope () = Int.decr current_scope
+  (* Global state that stores the trait instance declarations available
+    during type inference. *)
+  let instances : instance_decl list ref = ref []
   (* Global state that stores the trait predicates emitted during type inference. *)
   let emitted : pred list ref = ref []
 
@@ -210,9 +215,13 @@ module Singleparam_traits() = struct
 
   (* Remove the predicates from emitted that satisfy f and return them. *)
   let take_emitted ~f =
-    let taken, kept = List.partition_tf !emitted ~f in
+    let matched, kept =
+      List.fold !emitted ~init:([], []) ~f:(fun (m, k) p ->
+        if f p then (p :: m, k) else (m, p :: k))
+    in
     emitted := kept;
-    taken
+    matched
+
 
   (* Generate a fresh unbound type variable with a unique name, an optional
     row constraint, and the current scope. *)
@@ -391,10 +400,27 @@ module Singleparam_traits() = struct
     in
     scope_of_ty Int.max_value p.arg
 
+  (* Check whether t1 is equal to t2 (basically a one-way unify). *)
+  let rec ty_matches (t1 : ty) (t2 : ty) : bool =
+    match (force t1, force t2) with
+    | TyBool, TyBool -> true
+    | TyName a, TyName b -> String.equal a b
+    | TyArrow (a1, a2), TyArrow (b1, b2) ->
+      ty_matches a1 b1 && ty_matches a2 b2
+    | TyApp xs, TyApp ys when List.length xs = List.length ys ->
+      List.for_all2_exn xs ys ~f:ty_matches
+    | _ -> false
+
+  (* Scan through instances to see if the predicate matches against any of them. *)
+  let resolve_pred (p : pred) : bool =
+    List.exists !instances ~f:(fun inst ->
+      String.equal inst.trait p.trait && ty_matches inst.arg p.arg)
+
   let gen (ty: ty) : generic_ty =
-    let local_preds =
-      take_emitted ~f:(fun p -> scope_of_pred p > !current_scope)
-    in
+    (* Remove resolved predicates. *)
+    ignore (take_emitted ~f:resolve_pred);
+    (* Take predicates in our current scope. *)
+    let scoped_preds = take_emitted ~f:(fun p -> scope_of_pred p > !current_scope) in
     let type_params : (id, row_constraint) Hashtbl.t = Hashtbl.create (module String) in
     let rec gen' ty =
       match force ty with
@@ -410,7 +436,7 @@ module Singleparam_traits() = struct
     in
     let ty = gen' ty in
     let predicates =
-      List.map local_preds ~f:(fun p -> { p with arg = gen' p.arg })
+      List.map scoped_preds ~f:(fun p -> { p with arg = gen' p.arg })
     in
     let type_params =
       Hashtbl.to_alist type_params
