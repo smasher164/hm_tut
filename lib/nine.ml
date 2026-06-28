@@ -411,10 +411,6 @@ module Nine() = struct
     let extras = List.map gty.type_params ~f:(fun (id, row) -> (id, TypeVarBind row)) in
     (extras, gty.ty)
 
-  let generalize_if_value ~to_link rhs : generic_ty =
-    if is_value rhs then gen ~to_link (typ rhs)
-    else dont_generalize (typ rhs)
-
   let rec check env ty exp =
     let texp = infer env exp in
     (try
@@ -497,7 +493,8 @@ module Nine() = struct
       let ty_gen =
         match ann with
         | Some ann -> ann
-        | None -> generalize_if_value ~to_link rhs
+        | None when is_value rhs -> gen ~to_link (typ rhs)
+        | None -> dont_generalize (typ rhs)
       in
       link_all to_link;
       let env_body = (id, VarBind ty_gen) :: env in
@@ -527,7 +524,8 @@ module Nine() = struct
         let ty_gen =
           match ann with
           | Some ann -> ann
-          | None -> generalize_if_value ~to_link rhs
+          | None when is_value rhs -> gen ~to_link (typ rhs)
+          | None -> dont_generalize (typ rhs)
         in
         (id, VarBind ty_gen))
       in
