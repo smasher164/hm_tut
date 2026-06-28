@@ -2484,24 +2484,18 @@ let rec is_value (x: texp) : bool =
 ```
 The only interesting case is `TERecord`, where we check that all of its fields are also values.
 
-Next, let's write `generalize_if_value`, a helper that wraps `gen` so we only generalize when the `rhs` is a value. Otherwise, we fall back to `dont_generalize`. It threads through the `to_link` ref to `gen`.
+Now we can update the `ELet` and `ELetRec` cases to only call `gen` when the `rhs` is a value, otherwise falling back to `dont_generalize`. In `ELet`, the `None` branch where we previously called `gen ~to_link (typ rhs)` splits into two cases:
 
 ```ocaml
-let generalize_if_value ~to_link rhs : generic_ty =
-    if is_value rhs then gen ~to_link (typ rhs)
-    else dont_generalize (typ rhs)
+| None when is_value rhs -> gen ~to_link (typ rhs)
+| None -> dont_generalize (typ rhs)
 ```
 
-Now in our `ELet` case, the `None` branch where we previously called `gen ~to_link (typ rhs)` becomes:
+The `ELetRec` case gets the same treatment but inside the `List.map` that produces `generalized_bindings`. The `None` branch becomes:
 
 ```ocaml
-| None -> generalize_if_value ~to_link rhs
-```
-
-The `ELetRec` case gets the same treatment in the `List.map` that produces `generalized_bindings`. The `None` branch where we previously called `gen ~to_link (typ rhs)` becomes:
-
-```ocaml
-| None -> generalize_if_value ~to_link rhs
+| None when is_value rhs -> gen ~to_link (typ rhs)
+| None -> dont_generalize (typ rhs)
 ```
 
 Putting this all together, we have implemented the value restriction. If we added `ref`, `deref`, and `update` built-ins, our language would correctly handle mutability.
