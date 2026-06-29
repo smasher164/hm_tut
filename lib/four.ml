@@ -247,7 +247,7 @@ module Four() = struct
     Ast.map_prog
       ~on_ty_bool:(fun () -> TyBool)
       ~on_ty_arrow:(fun a b -> TyArrow (a, b))
-      ~on_generic_ty:(fun _ ty -> ty)
+      ~on_generic_ty:(fun { ty; _ } -> ty)
       ~on_let_decl:(fun id ann rhs -> (id, ann, rhs))
       ~on_bool:(fun b -> EBool b)
       ~on_var:(fun x -> EVar x)
@@ -256,7 +256,7 @@ module Four() = struct
       ~on_if:(fun c t e -> EIf (c, t, e))
       ~on_let:(fun d body -> ELet (d, body))
       ~on_letrec:(fun ds body -> ELetRec (ds, body))
-      ~on_prog:(fun _ e -> e)
+      ~on_prog:(fun { exp; _ } -> exp)
       ast_prog
 
   let typecheck_source src =

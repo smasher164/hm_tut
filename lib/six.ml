@@ -500,10 +500,10 @@ module Six() = struct
       ~on_ty_arrow:(fun a b -> TyArrow (a, b))
       ~on_ty_name:(fun x -> TyName x)
       ~on_no_row:(fun () -> ())
-      ~on_generic_ty:(fun ps ty ->
-        let type_params = List.map ps ~f:fst in
+      ~on_generic_ty:(fun { type_params; ty; _ } ->
+        let type_params = List.map type_params ~f:fst in
         { type_params; ty })
-      ~on_tycon:(fun name type_params ty ->
+      ~on_tycon:(fun { name; type_params; ty; _ } ->
         if not (List.is_empty type_params) then
           failwith "tycon type parameters not supported"
         else { name; ty })
@@ -518,7 +518,7 @@ module Six() = struct
       ~on_proj:(fun rcd fld -> EProj (rcd, fld))
       ~on_let:(fun d body -> ELet (d, body))
       ~on_letrec:(fun ds body -> ELetRec (ds, body))
-      ~on_prog:(fun tycons e -> (tycons, e))
+      ~on_prog:(fun { tycons; exp; _ } -> (tycons, exp))
       ast_prog
 
   let typecheck_source src =

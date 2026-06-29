@@ -187,7 +187,7 @@ module One() = struct
       ~on_var:(fun x -> EVar x)
       ~on_lam:(fun x body -> ELam (x, body))
       ~on_app:(fun f a -> EApp (f, a))
-      ~on_prog:(fun _ e -> e)
+      ~on_prog:(fun { exp; _ } -> exp)
       ast_prog
 
   let typecheck_source src =

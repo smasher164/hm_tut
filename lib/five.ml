@@ -376,8 +376,8 @@ module Five() = struct
       ~on_ty_bool:(fun () -> TyBool)
       ~on_ty_arrow:(fun a b -> TyArrow (a, b))
       ~on_ty_name:(fun x -> TyName x)
-      ~on_generic_ty:(fun _ ty -> ty)
-      ~on_tycon:(fun name type_params ty ->
+      ~on_generic_ty:(fun { ty; _ } -> ty)
+      ~on_tycon:(fun { name; type_params; ty; _ } ->
         if not (List.is_empty type_params) then
           failwith "tycon type parameters not supported"
         else { name; ty })
@@ -392,7 +392,7 @@ module Five() = struct
       ~on_proj:(fun rcd fld -> EProj (rcd, fld))
       ~on_let:(fun d body -> ELet (d, body))
       ~on_letrec:(fun ds body -> ELetRec (ds, body))
-      ~on_prog:(fun tycons e -> (tycons, e))
+      ~on_prog:(fun { tycons; exp; _ } -> (tycons, exp))
       ast_prog
 
   let typecheck_source src =

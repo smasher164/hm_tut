@@ -203,7 +203,7 @@ module Two() = struct
       ~on_lam:(fun x body -> ELam (x, body))
       ~on_app:(fun f a -> EApp (f, a))
       ~on_if:(fun c t e -> EIf (c, t, e))
-      ~on_prog:(fun _ e -> e)
+      ~on_prog:(fun { exp; _ } -> exp)
       ast_prog
 
   let typecheck_source src =

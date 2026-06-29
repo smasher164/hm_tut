@@ -580,8 +580,8 @@ module Nine() = struct
       ~on_no_row:(fun () -> NoRow)
       ~on_open_row:(fun flds -> OpenRow flds)
       ~on_closed_row:(fun flds -> ClosedRow flds)
-      ~on_generic_ty:(fun ps ty -> { type_params = ps; ty })
-      ~on_tycon:(fun name type_params ty -> { name; type_params; ty })
+      ~on_generic_ty:(fun { type_params; ty; _ } -> { type_params; ty })
+      ~on_tycon:(fun { name; type_params; ty; _ } -> { name; type_params; ty })
       ~on_let_decl:(fun id ann rhs -> (id, ann, rhs))
       ~on_bool:(fun b -> EBool b)
       ~on_var:(fun x -> EVar x)
@@ -593,7 +593,7 @@ module Nine() = struct
       ~on_proj:(fun rcd fld -> EProj (rcd, fld))
       ~on_let:(fun d body -> ELet (d, body))
       ~on_letrec:(fun ds body -> ELetRec (ds, body))
-      ~on_prog:(fun tycons e -> (tycons, e))
+      ~on_prog:(fun { tycons; exp; _ } -> (tycons, exp))
       ast_prog
 
   let typecheck_source src =
