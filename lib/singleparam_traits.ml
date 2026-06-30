@@ -42,14 +42,12 @@ module Singleparam_traits() = struct
     predicates : pred list;
     ty : ty;
   }
-  (* An instance declaration declares that a type satisfies a trait. *)
-  type instance_decl = { trait : id; arg : ty }
-  type bind =
-    | VarBind of generic_ty (* A variable binding maps to a generic type. *)
-    | TypeBind of tycon (* A type binding maps to a type constructor. *)
-    | TypeVarBind of row_constraint
-      (* A type variable binding marks some rigid type and its corresponding row constraints. *)
-  type env = (id * bind) list
+  (* Trait declaration with a type parameter and methods. *)
+  type trait_decl = {
+    name : id;
+    type_param : id;
+    methods : record_ty;
+  }
   type exp =
     | EBool of bool (* true/false *)
     | EVar of id (* x *)
@@ -63,6 +61,24 @@ module Singleparam_traits() = struct
     | ELetRec of let_decl list * exp (* let rec <decls> in <exp> *)
   and record_lit = (id * exp) list
   and let_decl = id * generic_ty option * exp
+  (* An instance declaration carries evidence that some type satisfies a trait,
+    assuming the predicates in the context hold. *)
+  type instance_decl = {
+    head : pred;
+    type_params : id list;
+    context : pred list;
+    methods : record_lit;
+  }
+  type bind =
+    | VarBind of generic_ty (* A variable binding maps to a generic type. *)
+    | TypeBind of tycon (* A type binding maps to a type constructor. *)
+    | TypeVarBind of row_constraint
+      (* A type variable binding marks some rigid type and its corresponding row constraints. *)
+    | InstanceBind of instance_decl
+      (* A global instance declaration. *)
+    | GivenBind of pred
+      (* A predicate that is given to the environment by an annotation or instance context. *)
+  type env = (id * bind) list
   type texp =
     | TEBool of bool * ty
     | TEVar of id * ty
@@ -76,7 +92,7 @@ module Singleparam_traits() = struct
     | TELetRec of tlet_decl list * texp * ty
   and tyrecord_lit = (id * texp) list
   and tlet_decl = id * generic_ty option * texp
-  type prog = tycon list * exp
+  type prog = tycon list * trait_decl list * instance_decl list * exp
 
   let rec force (ty : ty) : ty =
     match ty with
@@ -94,6 +110,8 @@ module Singleparam_traits() = struct
     | NoRow -> "NoRow"
     | OpenRow flds -> Printf.sprintf "{%s, ...}" (ty_fields f flds)
     | ClosedRow flds -> Printf.sprintf "{%s}" (ty_fields f flds)
+
+  let print_pred f (p : pred) = p.trait ^ " " ^ f p.arg
 
   let rec ty_pretty ty =
     match force ty with
@@ -130,6 +148,8 @@ module Singleparam_traits() = struct
   exception Expected of string
   exception RowMismatch of string
   exception UnboundTypeVar of string
+  exception NoSuchInstance of string
+  exception MatchFailure
 
   let unbound_typevar id =
     UnboundTypeVar (Printf.sprintf "unresolved type variable %s after typechecking" id)
@@ -150,8 +170,19 @@ module Singleparam_traits() = struct
   let row_mismatch row1 row2 =
     RowMismatch (Printf.sprintf "%s and %s" (print_row ty_pretty row1) (print_row ty_pretty row2))
 
+  let no_instance preds =
+    NoSuchInstance
+      (Printf.sprintf "no instance found for %s"
+         (String.concat ~sep:", " (List.map preds ~f:(print_pred ty_pretty))))
+
   let cannot_apply name =
     UnificationFailure (Printf.sprintf "cannot apply %s" name)
+
+  let missing_method trait_name mname =
+    TypeError (Printf.sprintf "instance for trait %s is missing method %s" trait_name mname)
+
+  let undeclared_method mname trait_name =
+    TypeError (Printf.sprintf "method %s is not declared in trait %s" mname trait_name)
 
   (* Lookup a variable's type in the environment. *)
   let lookup_var_type name (e : env) : generic_ty =
@@ -163,6 +194,11 @@ module Singleparam_traits() = struct
     match List.Assoc.find e ~equal name with
     | Some b -> b
     | None -> raise (undefined_error "type" name)
+
+  let find_trait traits name : trait_decl =
+    match List.find traits ~f:(fun t -> String.equal t.name name) with
+    | Some t -> t
+    | None -> raise (undefined_error "trait" name)
 
   let rec wf_ty (env : env) (ty : ty) : unit =
     match ty with
@@ -204,9 +240,6 @@ module Singleparam_traits() = struct
   let current_scope = ref 1
   let enter_scope () = Int.incr current_scope
   let leave_scope () = Int.decr current_scope
-  (* Global state that stores the trait instance declarations available
-    during type inference. *)
-  let instances : instance_decl list ref = ref []
   (* Global state that stores the trait predicates emitted during type inference. *)
   let emitted : pred list ref = ref []
 
@@ -378,6 +411,22 @@ module Singleparam_traits() = struct
       (* Unification has failed. *)
       raise (unify_failed t1 t2)
 
+  (* A one-way match mirroring the structure of unify. *)
+  let rec match_ty (pattern : ty) (target : ty) : unit =
+    let pattern, target = (force pattern, force target) in
+    match (pattern, target) with
+    | _ when equal pattern target -> ()
+    | TyArrow (f1, d1), TyArrow (f2, d2) ->
+      match_ty f1 f2;
+      match_ty d1 d2
+    | TyVar tv, ty ->
+      occurs tv ty;
+      tv := Link ty
+    | TyName a, TyName b when equal a b -> ()
+    | TyApp app1, TyApp app2 when List.length app1 = List.length app2 ->
+      List.iter2_exn app1 app2 ~f:match_ty
+    | _ -> raise MatchFailure
+
   (* The environment stores generic types, but sometimes we need to associate
     a non-generalized type to a variable. This function wraps a type into a
     trivial generic type (no quantified parameters). *)
@@ -400,35 +449,44 @@ module Singleparam_traits() = struct
     in
     scope_of_ty Int.max_value p.arg
 
-  (* Check whether t1 is equal to t2 (basically a one-way unify). *)
-  let rec ty_matches (t1 : ty) (t2 : ty) : bool =
-    match (force t1, force t2) with
-    | TyBool, TyBool -> true
-    | TyName a, TyName b -> String.equal a b
-    | TyArrow (a1, a2), TyArrow (b1, b2) ->
-      ty_matches a1 b1 && ty_matches a2 b2
-    | TyApp xs, TyApp ys when List.length xs = List.length ys ->
-      List.for_all2_exn xs ys ~f:ty_matches
-    | _ -> false
+  (* Wrap match_ty into a bool-returning variant for matching attempts. *)
+  let try_match (pattern : ty) (target : ty) : bool =
+    try match_ty pattern target; true
+    with MatchFailure | OccursCheck -> false
 
-  (* Scan through instances to see if the predicate matches against any of them. *)
-  let resolve_pred (p : pred) : bool =
-    List.exists !instances ~f:(fun inst ->
-      String.equal inst.trait p.trait && ty_matches inst.arg p.arg)
+  (* Scan through trait bindings in the env to see if the predicate matches against any of them. *)
+  let rec resolve_pred env (p : pred) : bool =
+    List.exists env ~f:(fun (_, b) -> match b with
+      | GivenBind g ->
+        String.equal g.trait p.trait && try_match g.arg p.arg
+      | InstanceBind inst when String.equal inst.head.trait p.trait ->
+        let tbl = Hashtbl.of_alist_exn (module String)
+          (List.map inst.type_params ~f:(fun pid -> (pid, fresh_unbound_var ())))
+        in
+        let inst_arg = substitute tbl inst.head.arg in
+        let inst_context = List.map inst.context ~f:(fun c ->
+          { c with arg = substitute tbl c.arg })
+        in
+        try_match inst_arg p.arg
+        && List.for_all inst_context ~f:(resolve_pred env)
+      | _ -> false)
 
-  let gen (ty: ty) : generic_ty =
-    (* Remove resolved predicates. *)
-    ignore (take_emitted ~f:resolve_pred);
-    (* Take predicates in our current scope. *)
-    let scoped_preds = take_emitted ~f:(fun p -> scope_of_pred p > !current_scope) in
+  (* Remove from emitted any predicates that have a matching trait binding in env. *)
+  let resolve_emitted env = ignore (take_emitted ~f:(resolve_pred env))
+
+  (* Take predicates in our current scope. *)
+  let take_scoped_preds () =
+    take_emitted ~f:(fun p -> scope_of_pred p > !current_scope)
+
+  let gen ~to_link ~(scoped_preds : pred list) (ty: ty) : generic_ty =
     let type_params : (id, row_constraint) Hashtbl.t = Hashtbl.create (module String) in
     let rec gen' ty =
       match force ty with
       | TyVar ({ contents = Unbound (id, row, scope) } as tv) when scope > !current_scope ->
         Hashtbl.set type_params ~key:id ~data:(map_row ~f:gen' row);
-        (* Mutate the tvar to Link to its generalized TyName, so the
-          post-pass walking the AST doesn't see it as Unbound. *)
-        tv := Link (TyName id);
+        (* Record the tvar so the caller can Link it to its generalized
+          TyName after all related bindings have been generalized. *)
+        to_link := tv :: !to_link;
         TyName id
       | TyArrow (from, dst) -> TyArrow (gen' from, gen' dst)
       | TyApp app -> TyApp (List.map app ~f:gen')
@@ -444,13 +502,21 @@ module Singleparam_traits() = struct
     in
     { type_params; predicates; ty }
 
+  (* Link each recorded tvar to its generalized TyName, so the
+     post-pass walking the AST doesn't see it as Unbound. *)
+  let link_all to_link =
+    List.iter !to_link ~f:(fun tv ->
+      match !tv with
+      | Unbound (id, _, _) -> tv := Link (TyName id)
+      | Link _ -> ())
+
   (* Instantiate a generic type by replacing all the type parameters
    with fresh unbound type variables. Ensure that the same ID gets
    mapped to the same unbound type variable by using an (id, ty) Hashtbl. *)
   let inst (gty: generic_ty) : ty =
-    let tbl = Hashtbl.create (module String) in
-    List.iter gty.type_params ~f:(fun (pid, _) ->
-      Hashtbl.set tbl ~key:pid ~data:(fresh_unbound_var ()));
+    let tbl = Hashtbl.of_alist_exn (module String)
+      (List.map gty.type_params ~f:(fun (pid, _) -> (pid, fresh_unbound_var ())))
+    in
     (* Attach the instantiated row constraint to each fresh type variable in the table. *)
     List.iter gty.type_params ~f:(fun (pid, row) ->
       match row with
@@ -468,12 +534,9 @@ module Singleparam_traits() = struct
   (* Turn a generic_ty into its rigid form, so that when annotations are instantiated,
      they don't produce Unbound type variables that can unify with each other.*)
   let as_rigid (gty: generic_ty) : env * ty =
-    let extras = List.map gty.type_params ~f:(fun (id, row) -> (id, TypeVarBind row)) in
-    (extras, gty.ty)
-
-  let generalize_if_value rhs : generic_ty =
-    if is_value rhs then gen (typ rhs)
-    else dont_generalize (typ rhs)
+    let type_var_extras = List.map gty.type_params ~f:(fun (id, row) -> (id, TypeVarBind row)) in
+    let trait_extras = List.map gty.predicates ~f:(fun p -> ("_given", GivenBind p)) in
+    (type_var_extras @ trait_extras, gty.ty)
 
   let rec check env ty exp =
     let texp = infer env exp in
@@ -548,16 +611,24 @@ module Singleparam_traits() = struct
         match ann with
         | Some ann ->
           let (extras, check_ty) = as_rigid ann in
-          check (extras @ env) check_ty rhs
+          let env' = extras @ env in
+          let trhs = check env' check_ty rhs in
+          resolve_emitted env';
+          trhs
         | None -> infer env rhs
       in
-      leave_scope();
+      leave_scope ();
+      let to_link = ref [] in
       (* Value restriction: only generalize if the RHS is a value. *)
       let ty_gen =
         match ann with
         | Some ann -> ann
-        | None -> generalize_if_value rhs
+        | None when is_value rhs ->
+          let scoped_preds = take_scoped_preds () in
+          gen ~to_link ~scoped_preds (typ rhs)
+        | None -> dont_generalize (typ rhs)
       in
+      link_all to_link;
       let env_body = (id, VarBind ty_gen) :: env in
       let body = infer env_body body in
       TELet ((id, ann, rhs), body, typ body)
@@ -576,18 +647,29 @@ module Singleparam_traits() = struct
       in
       let env_with_decls = env_decls @ env in
       let tdecls : tlet_decl list = List.map prepared ~f:(fun (id, ann, rhs, extras, check_ty) ->
-        let trhs = check (extras @ env_with_decls) check_ty rhs in
+        let env' = extras @ env_with_decls in
+        let trhs = check env' check_ty rhs in
+        resolve_emitted env';
         (id, ann, trhs))
       in
-      leave_scope();
+      leave_scope ();
+      let any_value_unannotated =
+        List.exists tdecls ~f:(fun (_, ann, t) -> ann = None && is_value t)
+      in
+      let scoped_preds = if any_value_unannotated then take_scoped_preds () else [] in
+      let to_link = ref [] in
       let generalized_bindings = List.map tdecls ~f:(fun (id, ann, rhs) ->
         let ty_gen =
           match ann with
           | Some ann -> ann
-          | None -> generalize_if_value rhs
+          | None when is_value rhs -> gen ~to_link ~scoped_preds (typ rhs)
+          | None -> dont_generalize (typ rhs)
         in
         (id, VarBind ty_gen))
       in
+      (* Link tvars only after all bindings have been generalized, otherwise
+        the TyName would be hidden when trying to generalize the next binding. *)
+      link_all to_link;
       let env_body = generalized_bindings @ env in
       let body = infer env_body body in
       TELetRec (tdecls, body, typ body)
@@ -620,15 +702,79 @@ module Singleparam_traits() = struct
     in
     walk texp
 
-  let typecheck_prog ((tl, exp): prog) : texp =
-    let env = List.map tl ~f:(fun tc -> (tc.name, TypeBind tc)) in
-    List.iter tl ~f:(wf_tycon env);
+  let typecheck_prog ((tycons, traits, instances, exp): prog) : texp =
+    let env_tycons = List.map tycons ~f:(fun tc -> (tc.name, TypeBind tc)) in
+    (* Add trait methods to the env. *)
+    let env_traits = List.concat_map traits ~f:(fun tr ->
+      List.map tr.methods ~f:(fun (mname, mty) ->
+        (mname, VarBind {
+          type_params = [(tr.type_param, NoRow)];
+          predicates = [{ trait = tr.name; arg = TyName tr.type_param }];
+          ty = mty;
+        })))
+    in
+    let env_instances = List.map instances ~f:(fun inst -> ("_instance", InstanceBind inst)) in
+    let env = env_tycons @ env_traits @ env_instances in
+    List.iter tycons ~f:(wf_tycon env);
+    (* Check each instance's method bodies against the trait's method signatures. *)
+    List.iter instances ~f:(fun inst ->
+      let trait = find_trait traits inst.head.trait in
+      let tbl = Hashtbl.of_alist_exn (module String) [(trait.type_param, inst.head.arg)] in
+      List.iter trait.methods ~f:(fun (mname, _) ->
+        if not (List.exists inst.methods ~f:(fun (n, _) -> String.equal n mname)) then
+          raise (missing_method inst.head.trait mname));
+      List.iter inst.methods ~f:(fun (mname, mbody) ->
+        let mty_sig =
+          match List.Assoc.find trait.methods mname ~equal:String.equal with
+          | Some s -> s
+          | None -> raise (undeclared_method mname trait.name)
+        in
+        let gty : generic_ty = {
+          type_params = List.map inst.type_params ~f:(fun p -> (p, NoRow));
+          predicates = inst.context;
+          ty = substitute tbl mty_sig;
+        } in
+        let (extras, check_ty) = as_rigid gty in
+        let env' = extras @ env in
+        let _ = check env' check_ty mbody in
+        resolve_emitted env'));
     let texp = infer env exp in
+    resolve_emitted env;
+    if not (List.is_empty !emitted) then raise (no_instance !emitted);
     check_no_unbound texp;
     texp
 
-  let convert_prog (_ : Ast.prog) : prog =
-    failwith "TODO: extend mini-ml-parser to parse trait predicates"
+  let convert_prog (ast_prog : Ast.prog) : prog =
+    Ast.map_prog
+      ~on_ty_bool:(fun () -> TyBool)
+      ~on_ty_arrow:(fun a b -> TyArrow (a, b))
+      ~on_ty_name:(fun x -> TyName x)
+      ~on_ty_app:(fun ts -> TyApp ts)
+      ~on_no_row:(fun () -> NoRow)
+      ~on_open_row:(fun flds -> OpenRow flds)
+      ~on_closed_row:(fun flds -> ClosedRow flds)
+      ~on_pred:(fun { Ast.trait; args = [arg] } -> { trait; arg })
+      ~on_generic_ty:(fun { type_params; predicates; ty } ->
+        { type_params; predicates; ty })
+      ~on_tycon:(fun { name; type_params; ty; _ } -> { name; type_params; ty })
+      ~on_trait_decl:(fun { name; type_params = [type_param]; methods; _ } ->
+        { name; type_param; methods })
+      ~on_instance_decl:(fun { Ast.head; type_params; context; methods } ->
+        { head; type_params; context; methods })
+      ~on_let_decl:(fun id ann rhs -> (id, ann, rhs))
+      ~on_bool:(fun b -> EBool b)
+      ~on_var:(fun x -> EVar x)
+      ~on_lam:(fun x body -> ELam (x, body))
+      ~on_app:(fun f a -> EApp (f, a))
+      ~on_if:(fun c t e -> EIf (c, t, e))
+      ~on_record:(fun lit -> ERecord lit)
+      ~on_with:(fun rcd lit -> EWith (rcd, lit))
+      ~on_proj:(fun rcd fld -> EProj (rcd, fld))
+      ~on_let:(fun d body -> ELet (d, body))
+      ~on_letrec:(fun ds body -> ELetRec (ds, body))
+      ~on_prog:(fun { tycons; traits; instances; exp } ->
+        (tycons, traits, instances, exp))
+      ast_prog
 
   let typecheck_source src =
     src |> Parser.parse_string |> convert_prog |> typecheck_prog
@@ -912,3 +1058,31 @@ let%test "value_restriction_error" =
       let u : Unit = {} in
       deref r u
     |}
+
+let%test "show_via_base_instance" =
+  let open Singleparam_traits() in
+  expect_type "bool" {|
+    trait Show 'a = { show : 'a -> bool }
+    instance Show bool = { show = fun x -> x }
+    show true
+  |}
+
+let%test "show_no_instance_error" =
+  let open Singleparam_traits() in
+  expect_raises
+    (NoSuchInstance "no instance found for Show bool")
+    {|
+      trait Show 'a = { show : 'a -> bool }
+      show true
+    |}
+
+let%test "parameterized_instance" =
+  let open Singleparam_traits() in
+  expect_type "bool" {|
+    type box 'a = { value : 'a }
+    trait Show 'a = { show : 'a -> bool }
+    instance Show bool = { show = fun x -> x }
+    instance forall 'a. Show 'a => Show (box 'a) = { show = fun b -> show b.value }
+    let b : box bool = { value = true } in show b
+  |}
+
