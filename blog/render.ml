@@ -701,6 +701,7 @@ let baseline_css = {|
 @font-face { font-family: 'Century Schoolbook'; src: url('/static/CenturySchL-BoldItal.woff2') format('woff2'), url('/static/CenturySchL-BoldItal.woff') format('woff'), url('/static/CenturySchL-BoldItal.ttf') format('truetype'); font-weight: bold; font-style: italic; }
 @font-face { font-family: 'DejaVu Sans Mono'; src: url('/static/DejaVuSansMono.woff2') format('woff2'), url('/static/DejaVuSansMono.woff') format('woff'), url('/static/DejaVuSansMono.ttf') format('truetype'); font-weight: normal; font-style: normal; }
 @font-face { font-family: 'DejaVu Sans Mono'; src: url('/static/DejaVuSansMono-Bold.woff2') format('woff2'), url('/static/DejaVuSansMono-Bold.woff') format('woff'), url('/static/DejaVuSansMono-Bold.ttf') format('truetype'); font-weight: bold; font-style: normal; }
+html, body { color-scheme: light; }
 body { max-width: 40em; margin: 2em auto; padding: 0 1em; font-family: 'Century Schoolbook', 'Century Schoolbook L', 'Times New Roman', Times, serif; color: #0f172a; }
 @media screen and (max-width: 720px) { body { width: 80%; max-width: none; } }
 h1 { text-align: center; }
