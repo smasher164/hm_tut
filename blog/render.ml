@@ -512,6 +512,7 @@ let rec inline_text (inline : Cmarkit.Inline.t) : string =
   | _ -> ""
 
 let toc_entries : (int * string * string) list ref = ref []
+let toc_max_level = 3
 let seen_slugs : (string, int) Hashtbl.t = Hashtbl.create (module String)
 
 let reset_toc () =
@@ -538,7 +539,8 @@ let render_toc () : string =
       Int.min acc lvl)
   in
   let entries =
-    List.filter entries ~f:(fun (lvl, _, _) -> lvl <> min_level)
+    List.filter entries ~f:(fun (lvl, _, _) ->
+      lvl <> min_level && lvl <= toc_max_level)
   in
   let min_level =
     List.fold entries ~init:Int.max_value ~f:(fun acc (lvl, _, _) ->
