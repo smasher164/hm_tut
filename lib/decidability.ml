@@ -111,7 +111,10 @@ module Decidability() = struct
     | OpenRow flds -> Printf.sprintf "{%s, ...}" (ty_fields f flds)
     | ClosedRow flds -> Printf.sprintf "{%s}" (ty_fields f flds)
 
-  let print_pred f (p : pred) = p.trait ^ " " ^ f p.arg
+  let print_pred f (p : pred) =
+    match force p.arg with
+    | TyApp _ | TyArrow _ -> p.trait ^ " (" ^ f p.arg ^ ")"
+    | _ -> p.trait ^ " " ^ f p.arg
 
   let rec ty_pretty ty =
     match force ty with
@@ -187,7 +190,7 @@ module Decidability() = struct
 
   let context_not_parameter p =
     MalformedInstance
-      (Printf.sprintf "instance context %s must constrain a type parameter"
+      (Printf.sprintf "instance context %s does not constrain a type parameter"
          (print_pred ty_pretty p))
 
   (* Lookup a variable's type in the environment. *)
@@ -289,6 +292,11 @@ module Decidability() = struct
     | NoRow -> NoRow
     | OpenRow flds -> OpenRow (List.map flds ~f:(fun (id, ty) -> (id, f ty)))
     | ClosedRow flds -> ClosedRow (List.map flds ~f:(fun (id, ty) -> (id, f ty)))
+
+  (* Map each type parameter to a fresh unbound type variable. *)
+  let fresh_params (params : id list) : (id, ty) Hashtbl.t =
+    Hashtbl.of_alist_exn (module String)
+      (List.map params ~f:(fun pid -> (pid, fresh_unbound_var ())))
 
   (* Walk a type, replacing any TyName whose id appears in tbl with the
      corresponding entry. *)
@@ -475,9 +483,7 @@ module Decidability() = struct
       | GivenBind g ->
         String.equal g.trait p.trait && try_match g.arg p.arg
       | InstanceBind inst when String.equal inst.head.trait p.trait ->
-        let tbl = Hashtbl.of_alist_exn (module String)
-          (List.map inst.type_params ~f:(fun pid -> (pid, fresh_unbound_var ())))
-        in
+        let tbl = fresh_params inst.type_params in
         let inst_arg = substitute tbl inst.head.arg in
         let inst_context = List.map inst.context ~f:(fun c ->
           { c with arg = substitute tbl c.arg })
@@ -529,9 +535,7 @@ module Decidability() = struct
    with fresh unbound type variables. Ensure that the same ID gets
    mapped to the same unbound type variable by using an (id, ty) Hashtbl. *)
   let inst (gty: generic_ty) : ty =
-    let tbl = Hashtbl.of_alist_exn (module String)
-      (List.map gty.type_params ~f:(fun (pid, _) -> (pid, fresh_unbound_var ())))
-    in
+    let tbl = fresh_params (List.map gty.type_params ~f:fst) in
     (* Attach the instantiated row constraint to each fresh type variable in the table. *)
     List.iter gty.type_params ~f:(fun (pid, row) ->
       match row with
@@ -1102,10 +1106,10 @@ let%test "parameterized_instance" =
     let b : box bool = { value = true } in show b
   |}
 
-let%test "wf_instance_context_nested" =
+let%test "wf_instance_nested_context" =
   let open Decidability() in
   expect_raises
-    (MalformedInstance "instance context Show box 'a must constrain a type parameter")
+    (MalformedInstance "instance context Show (box 'a) does not constrain a type parameter")
     {|
       type box 'a = { value : 'a }
       trait Show 'a = { show : 'a -> bool }
