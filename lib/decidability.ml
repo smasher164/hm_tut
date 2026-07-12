@@ -193,6 +193,11 @@ module Decidability() = struct
       (Printf.sprintf "instance context %s does not constrain a type parameter"
          (print_pred ty_pretty p))
 
+  let head_not_constructor p =
+    MalformedInstance
+      (Printf.sprintf "instance head %s does not mention a type constructor"
+         (print_pred ty_pretty p))
+
   (* Lookup a variable's type in the environment. *)
   let lookup_var_type name (e : env) : generic_ty =
     match List.Assoc.find e ~equal name with
@@ -230,7 +235,11 @@ module Decidability() = struct
       | TyName id when List.mem inst.type_params id ~equal:String.equal -> ()
       (* Reject instances whose context grows, e.g. C [[a]] => C [a],
          by rejecting anything that's not a TyName. *)
-      | _ -> raise (context_not_parameter p))
+      | _ -> raise (context_not_parameter p));
+    match inst.head.arg with
+    | TyName id when List.mem inst.type_params id ~equal:String.equal ->
+      raise (head_not_constructor inst.head)
+    | _ -> ()
 
   (* Get the type of a typed expression. *)
   let typ (texp : texp) : ty =
@@ -1114,5 +1123,15 @@ let%test "wf_instance_nested_context" =
       type box 'a = { value : 'a }
       trait Show 'a = { show : 'a -> bool }
       instance forall 'a. Show (box 'a) => Show 'a = { show = fun x -> true }
+      true
+    |}
+
+let%test "wf_instance_head_not_constructor" =
+  let open Decidability() in
+  expect_raises
+    (MalformedInstance "instance head Show 'a does not mention a type constructor")
+    {|
+      trait Show 'a = { show : 'a -> bool }
+      instance forall 'a. Show 'a = { show = fun x -> true }
       true
     |}

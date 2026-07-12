@@ -27,6 +27,7 @@
           ] ++ (with pkgs.ocamlPackages; [
             ocaml
             ocaml-lsp
+            ocamlformat
             dune_3
             odoc
             utop
