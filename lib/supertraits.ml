@@ -2,7 +2,7 @@ open Base
 open Poly
 open Mini_ml
 
-module Singleparam_traits() = struct
+module Supertraits() = struct
   type id = string
   (* The scope is an integer counter that holds the depth of the current
     let binding. Every unbound type variable contains the scope at which
@@ -42,10 +42,11 @@ module Singleparam_traits() = struct
     predicates : pred list;
     ty : ty;
   }
-  (* Trait declaration with a type parameter and methods. *)
+  (* Trait declaration with a type parameter, supertrait context, and methods. *)
   type trait_decl = {
     name : id;
     type_param : id;
+    context : pred list;
     methods : record_ty;
   }
   type exp =
@@ -74,6 +75,8 @@ module Singleparam_traits() = struct
     | TypeBind of tycon (* A type binding maps to a type constructor. *)
     | TypeVarBind of row_constraint
       (* A type variable binding marks some rigid type and its corresponding row constraints. *)
+    | TraitBind of trait_decl
+      (* A global trait declaration. *)
     | InstanceBind of instance_decl
       (* A global instance declaration. *)
     | GivenBind of pred
@@ -153,6 +156,12 @@ module Singleparam_traits() = struct
   exception UnboundTypeVar of string
   exception NoSuchInstance of string
   exception MatchFailure
+  exception MalformedInstance of string
+  exception AmbiguousType of string
+  exception OverlappingInstance of string
+  exception MalformedSupertrait of string
+  exception SupertraitCycle of string
+  exception UnsatisfiedSupertrait of string
 
   let unbound_typevar id =
     UnboundTypeVar (Printf.sprintf "unresolved type variable %s after typechecking" id)
@@ -187,6 +196,39 @@ module Singleparam_traits() = struct
   let undeclared_method mname trait_name =
     TypeError (Printf.sprintf "method %s is not declared in trait %s" mname trait_name)
 
+  let context_not_parameter p =
+    MalformedInstance
+      (Printf.sprintf "instance context %s does not constrain a type parameter"
+         (print_pred ty_pretty p))
+
+  let context_not_in_head p =
+    MalformedInstance
+      (Printf.sprintf "instance context %s constrains a type parameter not determined by the head"
+         (print_pred ty_pretty p))
+
+  let ambiguous_predicate p v =
+    AmbiguousType
+      (Printf.sprintf "type parameter %s in predicate %s is not determined by the type"
+         v (print_pred ty_pretty p))
+
+  let overlapping_instance p1 p2 =
+    OverlappingInstance
+      (Printf.sprintf "instance %s overlaps with instance %s"
+         (print_pred ty_pretty p1) (print_pred ty_pretty p2))
+
+  let supertrait_not_parameter p param =
+    MalformedSupertrait
+      (Printf.sprintf "supertrait %s does not constrain the trait parameter %s"
+         (print_pred ty_pretty p) param)
+
+  let supertrait_cycle name =
+    SupertraitCycle (Printf.sprintf "trait %s is part of a supertrait cycle" name)
+
+  let unsatisfied_supertrait p head =
+    UnsatisfiedSupertrait
+      (Printf.sprintf "supertrait %s of instance %s is not satisfied"
+         (print_pred ty_pretty p) (print_pred ty_pretty head))
+
   (* Lookup a variable's type in the environment. *)
   let lookup_var_type name (e : env) : generic_ty =
     match List.Assoc.find e ~equal name with
@@ -216,6 +258,15 @@ module Singleparam_traits() = struct
       List.map tc.type_params ~f:(fun p -> (p, TypeVarBind NoRow)) @ env
     in
     List.iter tc.ty ~f:(fun (_, ty) -> wf_ty env ty)
+
+  (* Check that an instance declaration is well-formed. *)
+  let wf_instance (inst : instance_decl) : unit =
+    List.iter inst.context ~f:(fun p ->
+      match p.arg with
+      | TyName id when List.mem inst.type_params id ~equal:String.equal -> ()
+      (* Reject instances whose context grows, e.g. C [[a]] => C [a],
+         by rejecting anything that's not a TyName. *)
+      | _ -> raise (context_not_parameter p))
 
   (* Get the type of a typed expression. *)
   let typ (texp : texp) : ty =
@@ -462,11 +513,117 @@ module Singleparam_traits() = struct
     try match_ty pattern target; true
     with MatchFailure | OccursCheck -> false
 
+  (* Collect all the type parameters in params that appear in ty. *)
+  let params_in (params : id list) (ty : ty) : id list =
+    let rec go acc ty =
+      match ty with
+      | TyName id when List.mem params id ~equal:String.equal -> id :: acc
+      | TyArrow (from, dst) -> go (go acc from) dst
+      | TyApp app -> List.fold app ~init:acc ~f:go
+      | TyName _ | TyBool | TyVar _ -> acc
+    in
+    go [] ty
+
+  (* Check that every type parameter in an instance context is also in the
+     instance head. *)
+  let wf_instance_context (inst : instance_decl) : unit =
+    let head_params = params_in inst.type_params inst.head.arg in
+    List.iter inst.context ~f:(fun p ->
+      List.iter (params_in inst.type_params p.arg) ~f:(fun v ->
+        if not (List.mem head_params v ~equal:String.equal) then
+          raise (context_not_in_head p)))
+
+  (* Collect the type parameters that are determined once the type is
+     instantiated. Start from the type, recover the type parameters that
+     are touched, then the type parameters in the row constraints of
+     touched ones, all to a fixed point. *)
+  let determined_vars (gty : generic_ty) : id list =
+    let params = List.map gty.type_params ~f:fst in
+    let params_in_row = function
+      | NoRow -> []
+      | OpenRow flds | ClosedRow flds ->
+        List.concat_map flds ~f:(fun (_, ty) -> params_in params ty)
+    in
+    (* For each determined type parameter, add the type parameters in its
+       row constraint to the determined set. *)
+    let grow determined =
+      List.fold gty.type_params ~init:determined ~f:(fun acc (p, row) ->
+        if List.mem determined p ~equal:String.equal
+        then params_in_row row @ acc
+        else acc)
+      |> List.dedup_and_sort ~compare:String.compare
+    in
+    let rec fixpoint determined =
+      let next = grow determined in
+      if List.length next = List.length determined
+      then determined
+      else fixpoint next
+    in
+    let seed =
+      List.dedup_and_sort (params_in params gty.ty) ~compare:String.compare
+    in
+    fixpoint seed
+
+  (* Check that every type parameter in a predicate appears in the type,
+     either directly or through row constraints. *)
+  let check_unambiguous (gty : generic_ty) : unit =
+    let params = List.map gty.type_params ~f:fst in
+    let determined = determined_vars gty in
+    List.iter gty.predicates ~f:(fun p ->
+      List.iter (params_in params p.arg) ~f:(fun v ->
+        if not (List.mem determined v ~equal:String.equal) then
+          raise (ambiguous_predicate p v)))
+
+  (* Check whether two types unify and return false if not. *)
+  let overlaps env (t1 : ty) (t2 : ty) : bool =
+    try unify env t1 t2; true
+    with UnificationFailure _ | RowMismatch _ | OccursCheck -> false
+
+  (* Check that no two instances of the same trait have overlapping heads. *)
+  let check_coherence env (instances : instance_decl list) : unit =
+    let inst_head (inst : instance_decl) : ty =
+      substitute (fresh_params inst.type_params) inst.head.arg
+    in
+    ignore (List.fold instances ~init:[] ~f:(fun seen inst ->
+      List.iter seen ~f:(fun other ->
+        if String.equal other.head.trait inst.head.trait
+           && overlaps env (inst_head other) (inst_head inst) then
+          raise (overlapping_instance other.head inst.head));
+      inst :: seen))
+
+  (* Check that every supertrait in a trait declaration constrains the
+     trait parameter. *)
+  let wf_trait (tr : trait_decl) : unit =
+    List.iter tr.context ~f:(fun p ->
+      match p.arg with
+      | TyName id when String.equal id tr.type_param -> ()
+      | _ -> raise (supertrait_not_parameter p tr.type_param))
+
+  (* Check that no trait is reachable from itself through supertrait contexts. *)
+  let check_supertrait_cycles (traits : trait_decl list) : unit =
+    List.iter traits ~f:(fun tr ->
+      let rec walk seen name =
+        let trait = find_trait traits name in
+        List.fold trait.context ~init:seen ~f:(fun seen p ->
+          if String.equal p.trait tr.name then raise (supertrait_cycle tr.name)
+          else if List.mem seen p.trait ~equal:String.equal then seen
+          else walk (p.trait :: seen) p.trait)
+      in
+      ignore (walk [tr.name] tr.name))
+
+  (* Collect all the traits reachable from name through supertrait contexts. *)
+  let rec supertrait_closure env (name : id) : id list =
+    name :: List.concat_map env ~f:(fun (_, b) -> match b with
+      | TraitBind tr when String.equal tr.name name ->
+        List.concat_map tr.context ~f:(fun p -> supertrait_closure env p.trait)
+      | _ -> [])
+
   (* Scan through given and instance bindings in the env to see if the predicate matches against any of them. *)
   let rec resolve_pred env (p : pred) : bool =
     List.exists env ~f:(fun (_, b) -> match b with
       | GivenBind g ->
-        String.equal g.trait p.trait && try_match g.arg p.arg
+        List.mem (supertrait_closure env g.trait) p.trait ~equal:String.equal
+        && try_match g.arg p.arg
       | InstanceBind inst when String.equal inst.head.trait p.trait ->
         let tbl = fresh_params inst.type_params in
         let inst_arg = substitute tbl inst.head.arg in
@@ -479,6 +636,17 @@ module Singleparam_traits() = struct
 
   (* Remove from emitted any predicates that have a matching given or instance binding in env. *)
   let resolve_emitted env = ignore (take_emitted ~f:(resolve_pred env))
+
+  (* Check that every supertrait of the instance's trait is satisfied at the
+     instance head. *)
+  let check_instance_supertraits env traits (inst : instance_decl) : unit =
+    let trait = find_trait traits inst.head.trait in
+    let tbl = Hashtbl.of_alist_exn (module String) [(trait.type_param, inst.head.arg)] in
+    let env' = List.map inst.context ~f:(fun p -> ("_given", GivenBind p)) @ env in
+    List.iter trait.context ~f:(fun p ->
+      let p = { p with arg = substitute tbl p.arg } in
+      if not (resolve_pred env' p) then
+        raise (unsatisfied_supertrait p inst.head))
 
   (* Take predicates in our current scope. *)
   let take_scoped_preds () =
@@ -506,7 +674,9 @@ module Singleparam_traits() = struct
       Hashtbl.to_alist type_params
       |> List.sort ~compare:(fun (a,_) (b,_) -> String.compare a b)
     in
-    { type_params; predicates; ty }
+    let gty = { type_params; predicates; ty } in
+    check_unambiguous gty;
+    gty
 
   (* Link each recorded tvar to its generalized TyName, so the
      post-pass walking the AST doesn't see it as Unbound. *)
@@ -614,6 +784,7 @@ module Singleparam_traits() = struct
       let rhs =
         match ann with
         | Some ann ->
+          check_unambiguous ann;
           let (extras, check_ty) = as_rigid ann in
           let env' = extras @ env in
           let trhs = check env' check_ty rhs in
@@ -641,6 +812,7 @@ module Singleparam_traits() = struct
       let prepared = List.map decls ~f:(fun (id, ann, rhs) ->
         match ann with
         | Some ann ->
+          check_unambiguous ann;
           let (extras, check_ty) = as_rigid ann in
           (id, Some ann, rhs, extras, check_ty)
         | None ->
@@ -711,15 +883,24 @@ module Singleparam_traits() = struct
     (* Add trait methods to the env. *)
     let env_methods = List.concat_map traits ~f:(fun tr ->
       List.map tr.methods ~f:(fun (mname, mty) ->
-        (mname, VarBind {
+        let gty = {
           type_params = [(tr.type_param, NoRow)];
           predicates = [{ trait = tr.name; arg = TyName tr.type_param }];
           ty = mty;
-        })))
+        } in
+        check_unambiguous gty;
+        (mname, VarBind gty)))
     in
+    let env_traits = List.map traits ~f:(fun tr -> ("_trait", TraitBind tr)) in
     let env_instances = List.map instances ~f:(fun inst -> ("_instance", InstanceBind inst)) in
-    let env = env_tycons @ env_methods @ env_instances in
+    let env = env_tycons @ env_methods @ env_traits @ env_instances in
     List.iter tycons ~f:(wf_tycon env);
+    List.iter traits ~f:wf_trait;
+    check_supertrait_cycles traits;
+    List.iter instances ~f:wf_instance;
+    List.iter instances ~f:wf_instance_context;
+    check_coherence env instances;
+    List.iter instances ~f:(check_instance_supertraits env traits);
     (* Check each instance's method bodies against the trait's method signatures. *)
     List.iter instances ~f:(fun inst ->
       let trait = find_trait traits inst.head.trait in
@@ -761,8 +942,8 @@ module Singleparam_traits() = struct
       ~on_generic_ty:(fun { type_params; predicates; ty } ->
         { type_params; predicates; ty })
       ~on_tycon:(fun { name; type_params; ty; _ } -> { name; type_params; ty })
-      ~on_trait_decl:(fun { name; type_params = [type_param]; methods; _ } ->
-        { name; type_param; methods })
+      ~on_trait_decl:(fun { name; type_params = [type_param]; context; methods; _ } ->
+        { name; type_param; context; methods })
       ~on_instance_decl:(fun { Ast.head; type_params; context; methods } ->
         { head; type_params; context; methods })
       ~on_let_decl:(fun id ann rhs -> (id, ann, rhs))
@@ -792,37 +973,37 @@ module Singleparam_traits() = struct
 end
 
 let%test "basic" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" "(fun x -> x) true"
 
 let%test "basic_error" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (UnificationFailure "failed to unify type bool -> ?1 with bool")
     "(fun f -> f true) true"
 
 let%test "if" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" "if true then false else (fun x -> x) true"
 
 let%test "if_error" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (UnificationFailure "failed to unify type bool with ?0 -> ?0")
     "if true then false else fun x -> x"
 
 let%test "let" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" "let x = true in if x then false else true"
 
 let%test "let_ann" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (TypeError "expression does not have type bool")
     "let x : bool = fun y -> y in x"
 
 let%test "let_rec" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" {|
     let rec f = fun x -> if x then g x else x
     and g = fun x -> if x then f x else x in
@@ -830,7 +1011,7 @@ let%test "let_rec" =
   |}
 
 let%test "let_rec_error" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (UnificationFailure "failed to unify type bool -> bool with bool")
     {|
@@ -840,7 +1021,7 @@ let%test "let_rec_error" =
     |}
 
 let%test "tycon_undefined" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (Undefined "type Bogus not defined")
     {|
@@ -849,21 +1030,21 @@ let%test "tycon_undefined" =
     |}
 
 let%test "record_via_unparameterized_tycon" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" {|
     type Foo = { x : bool, y : bool -> bool }
     let foo : Foo = { x = true, y = fun x -> x } in foo.y true
   |}
 
 let%test "row" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" {|
     type Foo = { y : bool -> bool }
     let r : Foo = { y = fun x -> x } in (fun s -> s.y) r true
   |}
 
 let%test "row2" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" {|
     type Foo = { f : bool -> bool }
     type Bar = { x : bool }
@@ -873,7 +1054,7 @@ let%test "row2" =
   |}
 
 let%test "row_if" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (UnificationFailure "failed to unify type Foo with Bar")
     {|
@@ -885,7 +1066,7 @@ let%test "row_if" =
     |}
 
 let%test "row_with" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (RowMismatch "{y: bool, ...} and {x: bool}")
     {|
@@ -894,7 +1075,7 @@ let%test "row_with" =
     |}
 
 let%test "let_gen" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" {|
     type A = {}
     let a : A = {} in
@@ -904,14 +1085,14 @@ let%test "let_gen" =
   |}
 
 let%test "fix" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool -> bool" {|
     let rec fix = fun f -> fun x -> f (fix f) x in
     fix (fun f -> fun arg -> if arg then f false else true)
   |}
 
 let%test "let_gen_ann" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" {|
     type A = {}
     let a : A = {} in
@@ -920,7 +1101,7 @@ let%test "let_gen_ann" =
   |}
 
 let%test "let_gen_error" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (TypeError "expression does not have type 'a -> A")
     {|
@@ -930,46 +1111,46 @@ let%test "let_gen_error" =
     |}
 
 let%test "let_gen_scope_error" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (UnificationFailure "failed to unify type bool with bool -> ?2")
     "(fun x -> let y = x in y) true true"
 
 let%test "let_typevar_ref" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" {|
     let f : forall 'a. 'a -> 'a = fun x -> let y : 'a = x in y in
     f true
   |}
 
 let%test "let_rec_typevar_ref" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" {|
     let rec f : forall 'a. 'a -> 'a = fun x -> let y : 'a = x in y in
     f true
   |}
 
 let%test "let_rigid_ok" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" {|
     let f : forall 'a. 'a -> 'a = fun x -> x in
     f true
   |}
 
 let%test "let_rigid_error" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (TypeError "expression does not have type 'a -> 'b")
     "let f : forall 'a 'b. 'a -> 'b = fun x -> x in f"
 
 let%test "let_rec_rigid_error" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (TypeError "expression does not have type 'a -> 'b")
     "let rec f : forall 'a 'b. 'a -> 'b = fun x -> x in f"
 
 let%test "row_ann" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" {|
     type Foo = { x : bool, y : bool }
     let get_x : forall 'r. 'r :: { x : bool, ... } => 'r -> bool =
@@ -980,7 +1161,7 @@ let%test "row_ann" =
   |}
 
 let%test "row_ann_missing_field" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (RowMismatch "{x: bool, ...} and {y: bool}")
     {|
@@ -993,13 +1174,13 @@ let%test "row_ann_missing_field" =
     |}
 
 let%test "ann_missing_row_constraint" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (Expected "expected type record, got 'a")
     "let f : forall 'a. 'a -> bool = fun r -> r.x in true"
 
 let%test "let_gen_row" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool -> bool" {|
     type Foo = { x : bool }
     type Bar = { x : bool -> bool }
@@ -1011,14 +1192,14 @@ let%test "let_gen_row" =
   |}
 
 let%test "generic_tycon" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" {|
     type box 'a = { x : 'a }
     let r : box bool = { x = true } in r.x
   |}
 
 let%test "generic_tycon_let_gen" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "box bool" {|
     type box 'a = { x : 'a }
     let identity : forall 'a. box 'a -> box 'a = fun b -> b in
@@ -1026,7 +1207,7 @@ let%test "generic_tycon_let_gen" =
   |}
 
 let%test "generic_tycon_error" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (RowMismatch "{x: bool} and {x: bool, y: bool}")
     {|
@@ -1035,7 +1216,7 @@ let%test "generic_tycon_error" =
     |}
 
 let%test "value_restriction" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "Unit" {|
     type Ref 'a = { value : 'a }
     type Unit = {}
@@ -1048,7 +1229,7 @@ let%test "value_restriction" =
   |}
 
 let%test "value_restriction_error" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (UnificationFailure "failed to unify type bool with Unit")
     {|
@@ -1064,7 +1245,7 @@ let%test "value_restriction_error" =
     |}
 
 let%test "show_via_base_instance" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" {|
     trait Show 'a = { show : 'a -> bool }
     instance Show bool = { show = fun x -> x }
@@ -1072,7 +1253,7 @@ let%test "show_via_base_instance" =
   |}
 
 let%test "show_no_instance_error" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_raises
     (NoSuchInstance "no instance found for Show bool")
     {|
@@ -1081,7 +1262,7 @@ let%test "show_no_instance_error" =
     |}
 
 let%test "parameterized_instance" =
-  let open Singleparam_traits() in
+  let open Supertraits() in
   expect_type "bool" {|
     type box 'a = { value : 'a }
     trait Show 'a = { show : 'a -> bool }
@@ -1090,3 +1271,162 @@ let%test "parameterized_instance" =
     let b : box bool = { value = true } in show b
   |}
 
+let%test "wf_instance_nested_context" =
+  let open Supertraits() in
+  expect_raises
+    (MalformedInstance "instance context Show (box 'a) does not constrain a type parameter")
+    {|
+      type box 'a = { value : 'a }
+      trait Show 'a = { show : 'a -> bool }
+      instance forall 'a. Show (box 'a) => Show 'a = { show = fun x -> true }
+      true
+    |}
+
+let%test "wf_instance_context_not_in_head" =
+  let open Supertraits() in
+  expect_raises
+    (MalformedInstance "instance context Eq 'b constrains a type parameter not determined by the head")
+    {|
+      type box 'a = { value : 'a }
+      trait Show 'a = { show : 'a -> bool }
+      trait Eq 'a = { eq : 'a -> bool }
+      instance forall 'a 'b. Eq 'b => Show (box 'a) = { show = fun b -> true }
+      true
+    |}
+
+let%test "ambiguous_method" =
+  let open Supertraits() in
+  expect_raises
+    (AmbiguousType "type parameter 'a in predicate Foo 'a is not determined by the type")
+    {|
+      trait Foo 'a = { foo : bool }
+      true
+    |}
+
+let%test "ambiguous_annotation" =
+  let open Supertraits() in
+  expect_raises
+    (AmbiguousType "type parameter 'a in predicate Show 'a is not determined by the type")
+    {|
+      trait Show 'a = { show : 'a -> bool }
+      let f : forall 'a. Show 'a => bool = true in f
+    |}
+
+let%test "row_determines_predicate_var" =
+  let open Supertraits() in
+  expect_type "bool" {|
+    type Foo = { x : bool }
+    trait Show 'a = { show : 'a -> bool }
+    instance Show bool = { show = fun x -> x }
+    let getx : forall 'r 'a. 'r :: { x : 'a, ... }, Show 'a => 'r -> bool =
+      fun r -> show r.x
+    in
+    let foo : Foo = { x = true } in
+    getx foo
+  |}
+
+let%test "nested_row_determines_predicate_var" =
+  let open Supertraits() in
+  expect_type "bool" {|
+    type Inner = { x : bool }
+    type Outer = { inner : Inner }
+    trait Show 'a = { show : 'a -> bool }
+    instance Show bool = { show = fun x -> x }
+    let getx : forall 'r1 'r2 'a. 'r1 :: { inner : 'r2, ... }, 'r2 :: { x : 'a, ... }, Show 'a => 'r1 -> bool =
+      fun r -> show r.inner.x
+    in
+    let o : Outer = { inner = { x = true } } in
+    getx o
+  |}
+
+let%test "overlapping_instances" =
+  let open Supertraits() in
+  expect_raises
+    (OverlappingInstance "instance Show (box 'a) overlaps with instance Show (box bool)")
+    {|
+      type box 'a = { value : 'a }
+      trait Show 'a = { show : 'a -> bool }
+      instance Show bool = { show = fun x -> x }
+      instance forall 'a. Show 'a => Show (box 'a) = { show = fun b -> show b.value }
+      instance Show (box bool) = { show = fun b -> b.value }
+      true
+    |}
+
+let%test "overlapping_instances_unify" =
+  let open Supertraits() in
+  expect_raises
+    (OverlappingInstance "instance Show (pair 'a bool) overlaps with instance Show (pair bool 'b)")
+    {|
+      type pair 'a 'b = { fst : 'a, snd : 'b }
+      trait Show 'a = { show : 'a -> bool }
+      instance forall 'a. Show (pair 'a bool) = { show = fun p -> true }
+      instance forall 'b. Show (pair bool 'b) = { show = fun p -> true }
+      true
+    |}
+
+let%test "supertrait_method_via_given" =
+  let open Supertraits() in
+  expect_type "bool" {|
+    trait Eq 'a = { eq : 'a -> 'a -> bool }
+    trait Eq 'a => Ord 'a = { lt : 'a -> 'a -> bool }
+    trait Ord 'a => Sorted 'a = { ok : 'a -> bool }
+    let f : forall 'a. Ord 'a => 'a -> 'a -> bool =
+      fun x -> fun y -> if eq x y then true else lt x y
+    in
+    let g : forall 'b. Sorted 'b => 'b -> bool = fun x -> eq x x in
+    true
+  |}
+
+let%test "supertrait_cycle" =
+  let open Supertraits() in
+  expect_raises
+    (SupertraitCycle "trait A is part of a supertrait cycle")
+    {|
+      trait B 'a => A 'a = { fa : 'a -> bool }
+      trait A 'a => B 'a = { fb : 'a -> bool }
+      true
+    |}
+
+let%test "supertrait_satisfied_via_context" =
+  let open Supertraits() in
+  expect_type "bool" {|
+    type box 'a = { value : 'a }
+    trait Eq 'a = { eq : 'a -> 'a -> bool }
+    trait Eq 'a => Ord 'a = { lt : 'a -> 'a -> bool }
+    instance forall 'b. Eq 'b => Eq (box 'b) = { eq = fun p -> fun q -> eq p.value q.value }
+    instance forall 'a. Eq 'a => Ord (box 'a) = { lt = fun p -> fun q -> eq p.value q.value }
+    true
+  |}
+
+let%test "unsatisfied_supertrait" =
+  let open Supertraits() in
+  expect_raises
+    (UnsatisfiedSupertrait "supertrait Eq bool of instance Ord bool is not satisfied")
+    {|
+      trait Eq 'a = { eq : 'a -> 'a -> bool }
+      trait Eq 'a => Ord 'a = { lt : 'a -> 'a -> bool }
+      trait Ord 'a => Sorted 'a = { ok : 'a -> bool }
+      instance Sorted bool = { ok = fun x -> x }
+      instance Ord bool = { lt = fun x -> fun y -> y }
+      true
+    |}
+
+let%test "supertrait_not_parameter" =
+  let open Supertraits() in
+  expect_raises
+    (MalformedSupertrait "supertrait Eq (box 'a) does not constrain the trait parameter 'a")
+    {|
+      type box 'a = { value : 'a }
+      trait Eq 'a = { eq : 'a -> 'a -> bool }
+      trait Eq (box 'a) => Ord 'a = { lt : 'a -> 'a -> bool }
+      true
+    |}
+
+let%test "supertrait_undeclared" =
+  let open Supertraits() in
+  expect_raises
+    (Undefined "trait Missing not defined")
+    {|
+      trait Missing 'a => Ord 'a = { lt : 'a -> 'a -> bool }
+      true
+    |}

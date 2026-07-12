@@ -572,7 +572,7 @@ module Coherence() = struct
           raise (overlapping_instance other.head inst.head));
       inst :: seen))
 
-  (* Scan through trait bindings in the env to see if the predicate matches against any of them. *)
+  (* Scan through given and instance bindings in the env to see if the predicate matches against any of them. *)
   let rec resolve_pred env (p : pred) : bool =
     List.exists env ~f:(fun (_, b) -> match b with
       | GivenBind g ->
@@ -587,7 +587,7 @@ module Coherence() = struct
         && List.for_all inst_context ~f:(resolve_pred env)
       | _ -> false)
 
-  (* Remove from emitted any predicates that have a matching trait binding in env. *)
+  (* Remove from emitted any predicates that have a matching given or instance binding in env. *)
   let resolve_emitted env = ignore (take_emitted ~f:(resolve_pred env))
 
   (* Take predicates in our current scope. *)
@@ -823,7 +823,7 @@ module Coherence() = struct
   let typecheck_prog ((tycons, traits, instances, exp): prog) : texp =
     let env_tycons = List.map tycons ~f:(fun tc -> (tc.name, TypeBind tc)) in
     (* Add trait methods to the env. *)
-    let env_traits = List.concat_map traits ~f:(fun tr ->
+    let env_methods = List.concat_map traits ~f:(fun tr ->
       List.map tr.methods ~f:(fun (mname, mty) ->
         let gty = {
           type_params = [(tr.type_param, NoRow)];
@@ -834,7 +834,7 @@ module Coherence() = struct
         (mname, VarBind gty)))
     in
     let env_instances = List.map instances ~f:(fun inst -> ("_instance", InstanceBind inst)) in
-    let env = env_tycons @ env_traits @ env_instances in
+    let env = env_tycons @ env_methods @ env_instances in
     List.iter tycons ~f:(wf_tycon env);
     List.iter instances ~f:wf_instance;
     List.iter instances ~f:wf_instance_context;
